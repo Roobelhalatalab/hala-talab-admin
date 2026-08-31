@@ -8,14 +8,36 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="إدارة هلا طلب" />
-  <link rel="manifest" href="/hala-talab-admin/manifest.webmanifest?v=34" />
-  <link rel="apple-touch-icon" sizes="180x180" href="/hala-talab-admin/apple-touch-icon.png?v=34" />
+  <link rel="manifest" href="/hala-talab-admin/manifest.webmanifest?v=35" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/hala-talab-admin/apple-touch-icon.png?v=35" />
   <title>هلا طلب | لوحة الإدارة</title>
   <base href="/hala-talab-admin/" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/hala-talab-admin/styles.css?v=34" />
+  <link rel="stylesheet" href="/hala-talab-admin/styles.css?v=35" />
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+  <script>
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    OneSignalDeferred.push(async function(OneSignal) {
+      try {
+        await OneSignal.init({
+          appId: "1494f3b6-8c20-4fdd-8562-ef0ba01ceb90",
+          serviceWorkerPath: "/hala-talab-admin/OneSignalSDKWorker.js",
+          serviceWorkerParam: { scope: "/hala-talab-admin/onesignal/" },
+          autoResubscribe: true,
+          notificationClickHandlerMatch: "origin",
+          notificationClickHandlerAction: "navigate",
+          welcomeNotification: { disable: true }
+        });
+        window.__halaOneSignalReady = true;
+        window.dispatchEvent(new CustomEvent("hala-onesignal-ready"));
+      } catch (error) {
+        console.warn("OneSignal init failed:", error);
+        window.__halaOneSignalReady = false;
+      }
+    });
+  </script>
 </head>
 <body>
   <div id="app"><main style="min-height:100vh;display:grid;place-items:center;padding:24px;font-family:Tajawal,system-ui,-apple-system,sans-serif;background:#fff;color:#231f20"><section style="width:min(100%,430px);text-align:center"><div style="font-size:42px;margin-bottom:12px">هـ</div><h1 style="font-size:24px;margin:0 0 8px">إدارة هلا طلب</h1><p style="margin:0;color:#6b7280">جارٍ فتح لوحة الإدارة…</p></section></main></div>
@@ -27,11 +49,11 @@
       app.innerHTML='<main style="min-height:100vh;display:grid;place-items:center;padding:24px;font-family:system-ui,-apple-system,sans-serif;background:#fff;color:#231f20"><section style="width:min(100%,500px);text-align:center"><div style="font-size:40px">⚠️</div><h2>تعذر فتح لوحة الإدارة</h2><p style="color:#6b7280;line-height:1.8">حدّث الصفحة مرة واحدة. إذا استمرت المشكلة، أرسل صورة هذه الشاشة حتى نصلحها بدون تخمين.</p></section></main>';
     }, true);
   </script>
-  <script type="module" src="/hala-talab-admin/app.js?v=34"></script>
+  <script type="module" src="/hala-talab-admin/app.js?v=35"></script>
   <script>
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/hala-talab-admin/service-worker.js?v=34', { scope: '/hala-talab-admin/' }).catch((error) => {
+        navigator.serviceWorker.register('/hala-talab-admin/service-worker.js?v=35', { scope: '/hala-talab-admin/' }).catch((error) => {
           console.warn('PWA service worker registration failed:', error);
         });
       });

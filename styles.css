@@ -1006,3 +1006,16 @@ body{overflow-x:hidden;}
   table.mobile-stack-table td{display:table-cell!important;}
   table.mobile-stack-table td::before{display:none!important;content:none!important;}
 }
+
+
+/* Stage 35 — OneSignal Web Push */
+.push-enable-btn{position:relative}
+.push-status-dot{position:absolute;inline-size:9px;block-size:9px;border-radius:50%;inset-inline-start:7px;inset-block-start:7px;background:#94a3b8;border:2px solid #fff;box-sizing:content-box}
+.push-status-dot[data-state="active"]{background:#22c55e}
+.push-status-dot[data-state="inactive"]{background:#f59e0b}
+.push-status-dot[data-state="error"],.push-status-dot[data-state="unsupported"]{background:#ef4444}
+.push-status-dot[data-state="loading"]{background:#60a5fa}
+.hala-push-toast{position:fixed;z-index:999999;left:50%;bottom:max(24px,env(safe-area-inset-bottom));transform:translate(-50%,22px);opacity:0;pointer-events:none;max-width:min(92vw,440px);padding:12px 16px;border-radius:14px;background:#111827;color:#fff;font:600 14px/1.6 Tajawal,system-ui,sans-serif;text-align:center;box-shadow:0 12px 38px rgba(0,0,0,.22);transition:.2s ease}
+.hala-push-toast.show{opacity:1;transform:translate(-50%,0)}
+.hala-push-toast.success{background:#166534}.hala-push-toast.warn{background:#92400e}.hala-push-toast.error{background:#991b1b}
+@media(max-width:480px){.push-enable-btn{min-width:44px;min-height:44px}.hala-push-toast{font-size:13px}}
