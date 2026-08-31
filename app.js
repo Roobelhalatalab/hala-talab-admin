@@ -48,8 +48,100 @@ async function handleLogin(event) {
   renderDashboard(data.user);
 }
 function renderDashboard(user) {
-  app.innerHTML = `<div class="dashboard-shell"><aside class="sidebar" id="sidebar"><div class="sidebar-brand"><div class="brand-mark small">هـ</div><div><strong>هلا طلب</strong><span>لوحة الإدارة</span></div></div><nav class="sidebar-nav">${navItems.map(([id,label],i)=>`<button class="nav-item ${i===0?'active':''}" data-page="${id}"><span>${icons[id]}</span>${label}</button>`).join('')}</nav><button id="logoutBtn" class="nav-item logout"><span>${icons.logout}</span>تسجيل الخروج</button></aside><div class="main-area"><header class="topbar"><button id="menuBtn" class="icon-btn mobile-only">${icons.menu}</button><div class="page-title"><span>الإدارة</span><h1 id="pageTitle">لوحة المتابعة اليومية</h1></div><div class="top-actions"><button id="pushEnableBtn" class="icon-btn push-enable-btn" aria-label="تفعيل إشعارات الهاتف" title="تفعيل إشعارات الهاتف">📣<span id="pushStatusDot" class="push-status-dot"></span></button><button id="pinBellBtn" class="icon-btn notification-bell pin-bell" aria-label="طلبات استرجاع PIN">🔐<span id="pinBellBadge" class="notification-badge hidden">0</span></button><button id="adminBellBtn" class="icon-btn notification-bell" aria-label="إشعارات الإدارة">${icons.bell}<span id="adminBellBadge" class="notification-badge hidden">0</span></button><div class="admin-chip"><div class="avatar">${escapeHtml((user.email||'A')[0].toUpperCase())}</div><div><strong>مدير النظام</strong><span>${escapeHtml(user.email||'')}</span></div></div></div></header><main class="content" id="content"></main></div><div class="sidebar-overlay" id="sidebarOverlay"></div></div>`;
-  wireDashboard(); wireAdminNotifications(); wireOneSignalPush(user); renderStageTwoDashboard();
+  app.innerHTML = `<div class="dashboard-shell"><aside class="sidebar" id="sidebar"><div class="sidebar-brand"><div class="brand-mark small">هـ</div><div><strong>هلا طلب</strong><span>لوحة الإدارة</span></div></div><nav class="sidebar-nav">${navItems.map(([id,label],i)=>`<button class="nav-item ${i===0?'active':''}" data-page="${id}"><span>${icons[id]}</span>${label}</button>`).join('')}</nav><button id="logoutBtn" class="nav-item logout"><span>${icons.logout}</span>تسجيل الخروج</button></aside><div class="main-area"><header class="topbar"><button id="menuBtn" class="icon-btn mobile-only">${icons.menu}</button><div class="page-title"><span>الإدارة</span><h1 id="pageTitle">لوحة المتابعة اليومية</h1></div><div class="top-actions"><button id="pushEnableBtn" class="icon-btn notification-bell" aria-label="تفعيل إشعارات الهاتف" title="تفعيل إشعارات الهاتف">📲</button><button id="pinBellBtn" class="icon-btn notification-bell pin-bell" aria-label="طلبات استرجاع PIN">🔐<span id="pinBellBadge" class="notification-badge hidden">0</span></button><button id="adminBellBtn" class="icon-btn notification-bell" aria-label="إشعارات الإدارة">${icons.bell}<span id="adminBellBadge" class="notification-badge hidden">0</span></button><div class="admin-chip"><div class="avatar">${escapeHtml((user.email||'A')[0].toUpperCase())}</div><div><strong>مدير النظام</strong><span>${escapeHtml(user.email||'')}</span></div></div></div></header><main class="content" id="content"></main></div><div class="sidebar-overlay" id="sidebarOverlay"></div></div>`;
+  wireDashboard(); wireAdminNotifications(); wirePhonePush(user); renderStageTwoDashboard(); consumePushDeepLinkFromUrl();
+}
+
+
+function isIosDevice() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+function isStandalonePwa() {
+  return window.matchMedia?.('(display-mode: standalone)')?.matches || window.navigator.standalone === true;
+}
+function wirePhonePush(user) {
+  const btn = document.getElementById('pushEnableBtn');
+  if (!btn) return;
+  const setState = (state) => {
+    if (state === 'on') { btn.textContent='✅'; btn.title='إشعارات الهاتف مفعلة'; btn.setAttribute('aria-label','إشعارات الهاتف مفعلة'); }
+    else if (state === 'blocked') { btn.textContent='🚫'; btn.title='الإشعارات مرفوضة من إعدادات الجهاز'; }
+    else { btn.textContent='📲'; btn.title='تفعيل إشعارات الهاتف'; }
+  };
+  const connectIdentity = async (OneSignal) => {
+    try {
+      if (user?.id) await OneSignal.login(String(user.id));
+      await OneSignal.User.addTag('role','admin');
+      if (user?.email) await OneSignal.User.addTag('admin_email',String(user.email));
+    } catch (e) { console.warn('OneSignal identity/tag setup failed:', e); }
+  };
+  const refresh = () => {
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(async function(OneSignal) {
+      try {
+        await connectIdentity(OneSignal);
+        const permission = OneSignal.Notifications.permission;
+        setState(permission === true ? 'on' : (Notification?.permission === 'denied' ? 'blocked' : 'off'));
+      } catch (_) { setState('off'); }
+    });
+  };
+  btn.addEventListener('click', () => {
+    if (isIosDevice() && !isStandalonePwa()) {
+      alert('على iPhone و iPad افتح لوحة الإدارة من الأيقونة المثبتة على الشاشة الرئيسية، ثم اضغط زر تفعيل الإشعارات مرة ثانية.');
+      return;
+    }
+    btn.disabled = true;
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(async function(OneSignal) {
+      try {
+        await connectIdentity(OneSignal);
+        if (OneSignal.Notifications.permission !== true) await OneSignal.Notifications.requestPermission();
+        if (OneSignal.Notifications.permission === true) {
+          try { await OneSignal.User.PushSubscription.optIn(); } catch (_) {}
+          setState('on');
+          alert('تم تفعيل إشعارات هلا طلب على هذا الجهاز.');
+        } else {
+          setState(Notification?.permission === 'denied' ? 'blocked' : 'off');
+        }
+      } catch (error) {
+        console.warn('Push permission failed:', error);
+        alert('تعذر تفعيل الإشعارات الآن. تأكد أن التطبيق مفتوح من أيقونة الشاشة الرئيسية ثم حاول مرة ثانية.');
+      } finally { btn.disabled = false; }
+    });
+  });
+  window.addEventListener('hala-onesignal-ready', refresh, { once:true });
+  setTimeout(refresh, 1200);
+}
+
+
+/* =========================================================
+   Admin Stage 36 — Central push deep links.
+   One server-side notification path serves iOS/iPadOS/Android.
+   ========================================================= */
+function consumePushDeepLinkFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    const target = String(url.searchParams.get('admin_target') || '').trim();
+    const id = String(url.searchParams.get('target_id') || '').trim();
+    if (!target) return;
+
+    const targets = {
+      'pin-customers': { page:'system', systemTab:'pin-customers', type:'pin_reset' },
+      'pin-partners': { page:'system', systemTab:'pin-partners', type:'pin_reset' },
+      'stores': { page:'stores', systemTab:null, type:'store_review' },
+      'drivers': { page:'drivers', systemTab:null, type:'driver_review' },
+    };
+    const cfg = targets[target];
+    if (!cfg) return;
+
+    if (id) pendingAdminNavigationTarget = { page:cfg.page, id, type:cfg.type };
+    setTimeout(() => navigateAdminPage(cfg.page, cfg.systemTab), 180);
+
+    url.searchParams.delete('admin_target');
+    url.searchParams.delete('target_id');
+    window.history.replaceState({}, document.title, url.pathname + (url.search ? url.search : '') + url.hash);
+  } catch (error) {
+    console.warn('Push deep-link handling failed:', error);
+  }
 }
 
 async function countTable(table, filterBuilder = null) {
@@ -2321,73 +2413,11 @@ async function renderSecurityPage(forcedTab='overview'){
   }catch(e){content.innerHTML=`<section class="empty-state"><div class="empty-icon">🛡️</div><span class="pill">إدارة هلا طلب</span><h2>تعذر تحميل فحص الأمان</h2><p>${escapeHtml(e?.message||String(e))}</p><p>تأكد من تشغيل ملف admin_stage9_security.sql مرة واحدة في Supabase.</p></section>`;}
 }
 
-
-function halaIsStandalonePwa(){
-  return window.matchMedia?.('(display-mode: standalone)')?.matches || window.navigator.standalone === true;
-}
-function halaIsIOS(){
-  return /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
-function halaPushToast(message,kind='info'){
-  let box=document.getElementById('halaPushToast');
-  if(!box){box=document.createElement('div');box.id='halaPushToast';box.className='hala-push-toast';document.body.appendChild(box);}
-  box.className=`hala-push-toast ${kind}`;box.textContent=message;box.classList.add('show');
-  clearTimeout(window.__halaPushToastTimer);window.__halaPushToastTimer=setTimeout(()=>box.classList.remove('show'),4200);
-}
-function wireOneSignalPush(user){
-  const btn=document.getElementById('pushEnableBtn');
-  const dot=document.getElementById('pushStatusDot');
-  if(!btn) return;
-  const setState=(state,label)=>{
-    btn.dataset.pushState=state;btn.title=label;btn.setAttribute('aria-label',label);
-    if(dot) dot.dataset.state=state;
-  };
-  setState('loading','جارٍ فحص إشعارات الهاتف');
-  const bind=()=>{
-    window.OneSignalDeferred=window.OneSignalDeferred||[];
-    window.OneSignalDeferred.push(async function(OneSignal){
-      try{
-        if(user?.id){ try{ await OneSignal.login(String(user.id)); }catch(_e){} }
-        const supported=OneSignal.Notifications.isPushSupported();
-        if(!supported){setState('unsupported','هذا الجهاز لا يدعم Web Push');btn.disabled=true;return;}
-        const refresh=()=>{
-          const opted=!!OneSignal.User.PushSubscription.optedIn;
-          const permission=!!OneSignal.Notifications.permission;
-          setState(opted&&permission?'active':'inactive',opted&&permission?'إشعارات الهاتف مفعلة':'اضغط لتفعيل إشعارات الهاتف');
-        };
-        refresh();
-        OneSignal.User.PushSubscription.addEventListener('change',refresh);
-        OneSignal.Notifications.addEventListener?.('permissionChange',refresh);
-        btn.addEventListener('click',async()=>{
-          try{
-            if(halaIsIOS()&&!halaIsStandalonePwa()){
-              halaPushToast('على iPhone/iPad افتح لوحة الإدارة من الأيقونة المضافة إلى الشاشة الرئيسية أولًا.','warn');return;
-            }
-            btn.disabled=true;setState('loading','جارٍ تفعيل الإشعارات…');
-            await OneSignal.User.PushSubscription.optIn();
-            if(!OneSignal.Notifications.permission){
-              try{await OneSignal.Notifications.requestPermission({fallbackToSettings:true});}catch(_e){}
-            }
-            refresh();
-            if(OneSignal.User.PushSubscription.optedIn && OneSignal.Notifications.permission){
-              halaPushToast('تم تفعيل إشعارات هلا طلب على هذا الجهاز ✅','success');
-            }else{
-              halaPushToast('اسمح بالإشعارات من نافذة النظام حتى تكتمل العملية.','warn');
-            }
-          }catch(error){console.warn('Push opt-in failed:',error);setState('inactive','تعذر تفعيل الإشعارات — اضغط للمحاولة');halaPushToast('تعذر تفعيل الإشعارات. جرّب مرة ثانية.','error');}
-          finally{btn.disabled=false;}
-        });
-      }catch(error){console.warn('OneSignal binding failed:',error);setState('error','تعذر الاتصال بخدمة الإشعارات');}
-    });
-  };
-  if(window.__halaOneSignalReady) bind(); else {window.addEventListener('hala-onesignal-ready',bind,{once:true});setTimeout(bind,5000);}
-}
-
 function wireDashboard() {
   const sidebar=document.getElementById('sidebar'), overlay=document.getElementById('sidebarOverlay'); const close=()=>{sidebar.classList.remove('open');overlay.classList.remove('show');};
   document.getElementById('menuBtn')?.addEventListener('click',()=>{sidebar.classList.toggle('open');overlay.classList.toggle('show');}); overlay.addEventListener('click',close);
   document.querySelectorAll('.nav-item[data-page]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.nav-item[data-page]').forEach(x=>x.classList.remove('active'));btn.classList.add('active');const label=btn.textContent.trim();document.getElementById('pageTitle').textContent=label;btn.dataset.page==='dashboard'?renderStageTwoDashboard():btn.dataset.page==='orders'?renderOrdersPage():btn.dataset.page==='stores'?renderStoresPage():btn.dataset.page==='drivers'?renderDriversPage():btn.dataset.page==='users'?renderUsersPage():btn.dataset.page==='reports'?renderReportsPage():btn.dataset.page==='system'?renderSystemPage():btn.dataset.page==='settings'?renderSecurityPage():renderPlaceholder(btn.dataset.page,label);close();}));
-  document.getElementById('logoutBtn').addEventListener('click',async()=>{try{window.OneSignalDeferred?.push(async O=>{try{await O.logout();}catch(_e){}});}catch(_e){} await supabase.auth.signOut();renderLogin();});
+  document.getElementById('logoutBtn').addEventListener('click',async()=>{await supabase.auth.signOut();renderLogin();});
 }
 async function boot() {
   if (!isSupabaseConfigured()) return renderSetup();

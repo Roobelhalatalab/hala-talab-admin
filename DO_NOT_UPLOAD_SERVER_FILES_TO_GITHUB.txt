@@ -1,0 +1,6 @@
+لا ترفع هذه الملفات إلى GitHub العام:
+- admin_stage36_central_admin_push.sql
+- admin-onesignal-push-index.ts
+- README_STAGE_36_CENTRAL_PUSH_AR.md
+
+ارفع فقط ملفات الويب عند الحاجة: index.html, app.js, styles.css, config.js, supabase.js, manifest.webmanifest, service-worker.js, icons.

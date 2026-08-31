@@ -1,11 +1,13 @@
-const CACHE_NAME = 'hala-talab-admin-stage35-v1';
+importScripts("https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js");
+
+const CACHE_NAME = 'hala-talab-admin-push-v36';
 const BASE = '/hala-talab-admin/';
 const APP_SHELL = [
   BASE,
   BASE + 'index.html',
   BASE + 'manifest.webmanifest',
-  BASE + 'styles.css',
-  BASE + 'app.js',
+  BASE + 'styles.css?v=36',
+  BASE + 'app.js?v=36',
   BASE + 'supabase.js',
   BASE + 'config.js',
   BASE + 'icon-192.png',
@@ -14,37 +16,38 @@ const APP_SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil((async () => {
-    const cache = await caches.open(CACHE_NAME);
-    for (const url of APP_SHELL) {
-      try { await cache.add(url); } catch (_) {}
-    }
-  })());
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(async (cache) => {
+      for (const url of APP_SHELL) {
+        try { await cache.add(url); } catch (_) {}
+      }
+    })
+  );
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)));
-    await self.clients.claim();
-  })());
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(
+      keys.filter((key) => key.startsWith('hala-talab-admin-') && key !== CACHE_NAME).map((key) => caches.delete(key))
+    ))
+  );
+  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
-  event.respondWith((async () => {
-    try {
-      const response = await fetch(event.request);
-      if (response && response.ok) {
-        const cache = await caches.open(CACHE_NAME);
-        cache.put(event.request, response.clone()).catch(() => {});
-      }
-      return response;
-    } catch (_) {
-      return (await caches.match(event.request)) || (await caches.match(BASE + 'index.html'));
-    }
-  })());
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request).then((cached) => cached || caches.match(BASE + 'index.html')))
+  );
 });
