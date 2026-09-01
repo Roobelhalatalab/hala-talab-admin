@@ -3,6 +3,64 @@ import { supabase, isSupabaseConfigured, verifyAdmin } from './supabase.js';
 import { APP_CONFIG } from './config.js';
 
 const app = document.getElementById('app');
+const ADMIN_PUSH_FUNCTION_URL = `${APP_CONFIG.supabaseUrl}/functions/v1/admin-onesignal-push`;
+
+async function callAdminPushDeviceApi(action, subscriptionId, extra = {}) {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new Error('انتهت جلسة الإدارة. سجّل الدخول من جديد.');
+
+  const response = await fetch(ADMIN_PUSH_FUNCTION_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ action, subscription_id: subscriptionId, ...extra }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok !== true) {
+    throw new Error(payload?.error || `تعذر تسجيل جهاز الإدارة (${response.status}).`);
+  }
+  return payload;
+}
+
+function adminPushPlatform() {
+  if (/iPad/i.test(navigator.userAgent)) return 'iPadOS';
+  if (/iPhone|iPod/i.test(navigator.userAgent)) return 'iOS';
+  if (/Android/i.test(navigator.userAgent)) return 'Android';
+  return 'Web';
+}
+
+async function registerAdminPushDevice(subscriptionId) {
+  if (!subscriptionId) throw new Error('لم يتم إنشاء Subscription ID بعد.');
+  return callAdminPushDeviceApi('register_device', subscriptionId, {
+    platform: adminPushPlatform(),
+    user_agent: navigator.userAgent || '',
+  });
+}
+
+async function unregisterAdminPushDevice(subscriptionId) {
+  if (!subscriptionId) return { ok: true };
+  return callAdminPushDeviceApi('unregister_device', subscriptionId);
+}
+
+async function deactivateCurrentPushDevice() {
+  return new Promise((resolve) => {
+    let finished = false;
+    const done = () => { if (!finished) { finished = true; resolve(); } };
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(async function(OneSignal) {
+      try {
+        const id = String(OneSignal?.User?.PushSubscription?.id || '').trim();
+        if (id) await unregisterAdminPushDevice(id);
+      } catch (e) {
+        console.warn('Push device unregister failed:', e);
+      } finally { done(); }
+    });
+    setTimeout(done, 1800);
+  });
+}
 
 const icons = {
   dashboard: '▦', orders: '🧾', stores: '🏪', drivers: '🚚', users: '👥',
@@ -91,109 +149,162 @@ async function waitForHealthyPush(OneSignal, timeoutMs=20000){
 function wirePhonePush(user) {
   const btn = document.getElementById('pushEnableBtn');
   if (!btn) return;
+
+  let registeredSubscriptionId = '';
+  let registrationError = '';
+
   const setState = (state) => {
-    btn.dataset.pushState=state;
-    if (state === 'on') { btn.textContent='✅'; btn.title='إشعارات الهاتف مفعلة'; btn.setAttribute('aria-label','إشعارات الهاتف مفعلة'); }
+    btn.dataset.pushState = state;
+    if (state === 'on') { btn.textContent='✅'; btn.title='إشعارات الهاتف مفعلة ومسجلة للإدارة'; btn.setAttribute('aria-label','إشعارات الهاتف مفعلة'); }
     else if (state === 'paused') { btn.textContent='🔕'; btn.title='إشعارات الهاتف متوقفة على هذا الجهاز'; btn.setAttribute('aria-label','إشعارات الهاتف متوقفة'); }
     else if (state === 'pending') { btn.textContent='⏳'; btn.title='جارٍ إكمال تسجيل إشعارات هذا الجهاز'; btn.setAttribute('aria-label','جارٍ إكمال تسجيل الإشعارات'); }
+    else if (state === 'server_error') { btn.textContent='⚠️'; btn.title='اشتراك الهاتف موجود لكن تسجيله في نظام الإدارة لم يكتمل'; btn.setAttribute('aria-label','تسجيل جهاز الإدارة يحتاج إصلاح'); }
     else if (state === 'blocked') { btn.textContent='🚫'; btn.title='الإشعارات مرفوضة من إعدادات الجهاز'; btn.setAttribute('aria-label','الإشعارات مرفوضة من إعدادات الجهاز'); }
     else if (state === 'unsupported') { btn.textContent='—'; btn.title='الإشعارات غير مدعومة على هذا المتصفح'; btn.setAttribute('aria-label','الإشعارات غير مدعومة'); }
     else { btn.textContent='📲'; btn.title='تفعيل إشعارات الهاتف'; btn.setAttribute('aria-label','تفعيل إشعارات الهاتف'); }
   };
+
   const classify = (OneSignal) => {
     try {
-      if (OneSignal?.Notifications?.isPushSupported && !OneSignal.Notifications.isPushSupported()) return ['unsupported',oneSignalPushSnapshot(OneSignal)];
+      if (OneSignal?.Notifications?.isPushSupported && !OneSignal.Notifications.isPushSupported()) return ['unsupported', oneSignalPushSnapshot(OneSignal)];
     } catch (_) {}
-    const s=oneSignalPushSnapshot(OneSignal);
-    if (browserNotificationPermission()==='denied') return ['blocked',s];
-    if (s.healthy) return ['on',s];
-    if (s.paused) return ['paused',s];
-    if (s.pending) return ['pending',s];
-    return ['off',s];
+    const s = oneSignalPushSnapshot(OneSignal);
+    if (browserNotificationPermission() === 'denied') return ['blocked', s];
+    if (s.paused) return ['paused', s];
+    if (s.pending) return ['pending', s];
+    if (s.healthy && registeredSubscriptionId === s.id) return ['on', s];
+    if (s.healthy && registrationError) return ['server_error', s];
+    if (s.healthy) return ['pending', s];
+    return ['off', s];
   };
+
+  const ensureRegistered = async (OneSignal) => {
+    const s = oneSignalPushSnapshot(OneSignal);
+    if (!s.healthy) return s;
+    if (registeredSubscriptionId === s.id) return s;
+    try {
+      await registerAdminPushDevice(s.id);
+      registeredSubscriptionId = s.id;
+      registrationError = '';
+    } catch (e) {
+      registrationError = e?.message || String(e);
+      console.warn('Admin push device registration failed:', e);
+      throw e;
+    }
+    return s;
+  };
+
   const refreshWith = async (OneSignal) => {
     try {
-      const [state,snapshot]=classify(OneSignal);
+      const snapshot = oneSignalPushSnapshot(OneSignal);
+      if (snapshot.healthy) {
+        try { await ensureRegistered(OneSignal); } catch (_) {}
+      }
+      const [state] = classify(OneSignal);
       setState(state);
       return snapshot;
     } catch (e) {
       console.warn('Push status refresh failed:', e);
-      setState('off');
+      setState('server_error');
       return null;
     }
   };
+
   const refresh = () => {
     window.OneSignalDeferred = window.OneSignalDeferred || [];
     window.OneSignalDeferred.push(async function(OneSignal) { await refreshWith(OneSignal); });
   };
+
+  const connectDevice = async (OneSignal) => {
+    if (OneSignal.Notifications.permission !== true) await OneSignal.Notifications.requestPermission();
+    if (OneSignal.Notifications.permission !== true) throw new Error('لم يتم منح إذن الإشعارات من الجهاز.');
+    setState('pending');
+    await OneSignal.User.PushSubscription.optIn();
+    const finalState = await waitForHealthyPush(OneSignal, 20000);
+    if (!finalState.healthy) throw new Error('لم يكتمل إنشاء اشتراك OneSignal لهذا الجهاز.');
+    await ensureRegistered(OneSignal);
+    setState('on');
+    return finalState;
+  };
+
   const openManager = (OneSignal) => {
     document.getElementById('pushManagerModal')?.remove();
-    const s=oneSignalPushSnapshot(OneSignal);
-    const statusText=s.healthy?'مفعلة وجاهزة للاستلام':s.paused?'متوقفة على هذا الجهاز':s.pending?'جارٍ إكمال التسجيل':'غير مفعلة';
-    const idText=s.id ? `${s.id.slice(0,8)}…${s.id.slice(-6)}` : 'سيُنشأ تلقائيًا';
-    const overlay=document.createElement('div');
-    overlay.className='modal-overlay';overlay.id='pushManagerModal';
-    overlay.innerHTML=`<section class="modal-card small-modal"><div class="modal-head"><div><span class="pill">إشعارات الإدارة</span><h2>إشعارات هذا الجهاز</h2><p class="modal-subtitle">الحالة: <strong>${escapeHtml(statusText)}</strong></p></div><button class="icon-btn" id="pushManagerClose">×</button></div><div class="push-health-box"><div><span>إذن النظام</span><strong>${s.permission?'مسموح':'غير مسموح'}</strong></div><div><span>اشتراك OneSignal</span><strong>${s.optedIn?'مفعّل':'غير مفعّل'}</strong></div><div><span>Subscription ID</span><strong dir="ltr">${escapeHtml(idText)}</strong></div><div><span>Push Token</span><strong>${s.token?'موجود ✓':'بانتظار الإنشاء'}</strong></div></div><div class="inline-actions push-manager-actions"><button class="primary-btn" id="pushRepairBtn">ربط الإشعارات الآن</button>${s.healthy?'<button class="secondary-btn" id="pushStopBtn">إيقاف إشعارات هذا الجهاز</button>':''}</div><div id="pushManagerMessage" class="panel-note"></div></section>`;
+    const s = oneSignalPushSnapshot(OneSignal);
+    const registered = Boolean(s.id && registeredSubscriptionId === s.id);
+    const statusText = registered && s.healthy ? 'مفعلة ومسجلة وجاهزة للاستلام' : s.paused ? 'متوقفة على هذا الجهاز' : s.pending ? 'جارٍ إكمال التسجيل' : registrationError ? 'اشتراك الهاتف موجود لكن تسجيل الإدارة لم يكتمل' : 'غير مفعلة';
+    const idText = s.id ? `${s.id.slice(0,8)}…${s.id.slice(-6)}` : 'سيُنشأ تلقائيًا';
+    const overlay = document.createElement('div');
+    overlay.className='modal-overlay'; overlay.id='pushManagerModal';
+    overlay.innerHTML=`<section class="modal-card small-modal"><div class="modal-head"><div><span class="pill">إشعارات الإدارة</span><h2>إشعارات هذا الجهاز</h2><p class="modal-subtitle">الحالة: <strong>${escapeHtml(statusText)}</strong></p></div><button class="icon-btn" id="pushManagerClose">×</button></div><div class="push-health-box"><div><span>إذن النظام</span><strong>${s.permission?'مسموح':'غير مسموح'}</strong></div><div><span>اشتراك OneSignal</span><strong>${s.optedIn?'مفعّل':'غير مفعّل'}</strong></div><div><span>Subscription ID</span><strong dir="ltr">${escapeHtml(idText)}</strong></div><div><span>مسجل في نظام الإدارة</span><strong>${registered?'نعم ✓':'ليس بعد'}</strong></div></div><div class="inline-actions push-manager-actions"><button class="primary-btn" id="pushRepairBtn">ربط الإشعارات الآن</button>${s.healthy?'<button class="secondary-btn" id="pushStopBtn">إيقاف إشعارات هذا الجهاز</button>':''}</div><div id="pushManagerMessage" class="panel-note">${registrationError?escapeHtml(registrationError):''}</div></section>`;
     document.body.appendChild(overlay);
-    const close=()=>overlay.remove();overlay.querySelector('#pushManagerClose').onclick=close;overlay.addEventListener('click',e=>{if(e.target===overlay)close();});
+    const close=()=>overlay.remove(); overlay.querySelector('#pushManagerClose').onclick=close; overlay.addEventListener('click',e=>{if(e.target===overlay)close();});
+
     overlay.querySelector('#pushRepairBtn').onclick=async()=>{
-      const repairBtn=overlay.querySelector('#pushRepairBtn');const msg=overlay.querySelector('#pushManagerMessage');
-      repairBtn.disabled=true;repairBtn.textContent='جارٍ الربط…';msg.textContent='';
-      try{
-        if(OneSignal.Notifications.permission!==true) await OneSignal.Notifications.requestPermission();
-        if(OneSignal.Notifications.permission!==true) throw new Error('لم يتم منح إذن الإشعارات من الجهاز.');
-        await OneSignal.User.PushSubscription.optIn();
-        const finalState=await waitForHealthyPush(OneSignal,20000);
-        if(!finalState.healthy) throw new Error('لم يكتمل تسجيل الجهاز. أغلق لوحة الإدارة وافتحها من الأيقونة المثبتة ثم اضغط التفعيل مرة واحدة.');
-        setState('on');msg.textContent='تم ربط إشعارات هذا الجهاز بنجاح ✓';
+      const repairBtn=overlay.querySelector('#pushRepairBtn'); const msg=overlay.querySelector('#pushManagerMessage');
+      repairBtn.disabled=true; repairBtn.textContent='جارٍ الربط…'; msg.textContent='';
+      try {
+        await connectDevice(OneSignal);
+        msg.textContent='تم ربط هذا الجهاز بنظام إشعارات الإدارة بنجاح ✓';
         setTimeout(close,900);
-      }catch(e){
-        console.warn('Push connect failed:',e);msg.textContent='تعذر الربط: '+(e?.message||String(e));await refreshWith(OneSignal);
-      }finally{repairBtn.disabled=false;repairBtn.textContent='ربط الإشعارات الآن';}
+      } catch (e) {
+        registrationError=e?.message||String(e);
+        msg.textContent='تعذر الربط: '+registrationError;
+        await refreshWith(OneSignal);
+      } finally { repairBtn.disabled=false; repairBtn.textContent='ربط الإشعارات الآن'; }
     };
+
     const stopBtn=overlay.querySelector('#pushStopBtn');
-    if(stopBtn) stopBtn.onclick=async()=>{
+    if (stopBtn) stopBtn.onclick=async()=>{
       stopBtn.disabled=true;
-      try{await OneSignal.User.PushSubscription.optOut();setState('paused');overlay.querySelector('#pushManagerMessage').textContent='تم إيقاف إشعارات هذا الجهاز.';setTimeout(close,700);}catch(e){overlay.querySelector('#pushManagerMessage').textContent='تعذر الإيقاف: '+(e?.message||String(e));}finally{stopBtn.disabled=false;}
+      try {
+        if (s.id) await unregisterAdminPushDevice(s.id);
+        registeredSubscriptionId=''; registrationError='';
+        await OneSignal.User.PushSubscription.optOut();
+        setState('paused');
+        overlay.querySelector('#pushManagerMessage').textContent='تم إيقاف إشعارات هذا الجهاز.';
+        setTimeout(close,700);
+      } catch (e) {
+        overlay.querySelector('#pushManagerMessage').textContent='تعذر الإيقاف: '+(e?.message||String(e));
+      } finally { stopBtn.disabled=false; }
     };
   };
+
   btn.addEventListener('click', () => {
     if (isIosDevice() && !isStandalonePwa()) {
       alert('على iPhone و iPad افتح لوحة الإدارة من الأيقونة المثبتة على الشاشة الرئيسية، ثم فعّل الإشعارات مرة واحدة.');
       return;
     }
-    btn.disabled = true;
+    btn.disabled=true;
     window.OneSignalDeferred = window.OneSignalDeferred || [];
     window.OneSignalDeferred.push(async function(OneSignal) {
       try {
         const [state]=classify(OneSignal);
-        if(state==='unsupported') { alert('هذا المتصفح لا يدعم إشعارات الويب على هذا الجهاز.'); return; }
-        if(state==='blocked') { alert('الإشعارات مرفوضة من إعدادات الجهاز. فعّل السماح بالإشعارات لتطبيق إدارة هلا طلب ثم ارجع للوحة.'); return; }
-        if(state==='on' || state==='paused') { openManager(OneSignal); return; }
-        if(OneSignal.Notifications.permission !== true) await OneSignal.Notifications.requestPermission();
-        if(OneSignal.Notifications.permission !== true) { setState(browserNotificationPermission()==='denied'?'blocked':'off'); return; }
-        setState('pending');
-        await OneSignal.User.PushSubscription.optIn();
-        const finalState=await waitForHealthyPush(OneSignal,20000);
-        if(finalState.healthy){setState('on');alert('تم تفعيل إشعارات هلا طلب على هذا الجهاز.');}
-        else {setState('pending');openManager(OneSignal);}
+        if (state==='unsupported') { alert('هذا المتصفح لا يدعم إشعارات الويب على هذا الجهاز.'); return; }
+        if (state==='blocked') { alert('الإشعارات مرفوضة من إعدادات الجهاز. فعّل السماح بالإشعارات لتطبيق إدارة هلا طلب ثم ارجع للوحة.'); return; }
+        if (state==='on' || state==='paused' || state==='server_error') { openManager(OneSignal); return; }
+        await connectDevice(OneSignal);
+        alert('تم تفعيل وربط إشعارات هلا طلب على هذا الجهاز.');
       } catch (error) {
-        console.warn('Push permission failed:', error);
-        alert('تعذر تفعيل الإشعارات الآن. افتح لوحة الإدارة من الأيقونة المثبتة وحاول مرة واحدة.');
-        refresh();
-      } finally { btn.disabled = false; }
+        registrationError=error?.message||String(error);
+        console.warn('Push activation failed:', error);
+        await refreshWith(OneSignal);
+        openManager(OneSignal);
+      } finally { btn.disabled=false; }
     });
   });
+
   window.OneSignalDeferred = window.OneSignalDeferred || [];
-  window.OneSignalDeferred.push(function(OneSignal){
-    try{
-      OneSignal.User.PushSubscription.addEventListener('change',async()=>{await refreshWith(OneSignal);});
-      OneSignal.Notifications.addEventListener('permissionChange',async()=>{await refreshWith(OneSignal);});
-    }catch(e){console.warn('Push state listener failed:',e);}
+  window.OneSignalDeferred.push(async function(OneSignal) {
+    try {
+      OneSignal.User.PushSubscription.addEventListener('change', async()=>{ registeredSubscriptionId=''; registrationError=''; await refreshWith(OneSignal); });
+      OneSignal.Notifications.addEventListener('permissionChange', async()=>{ await refreshWith(OneSignal); });
+      await refreshWith(OneSignal);
+    } catch (e) { console.warn('Push listener setup failed:', e); }
   });
   window.addEventListener('hala-onesignal-ready', refresh, { once:true });
   setTimeout(refresh, 1200);
 }
+
 
 
 /* =========================================================
@@ -2533,7 +2644,11 @@ function wireDashboard() {
   const sidebar=document.getElementById('sidebar'), overlay=document.getElementById('sidebarOverlay'); const close=()=>{sidebar.classList.remove('open');overlay.classList.remove('show');};
   document.getElementById('menuBtn')?.addEventListener('click',()=>{sidebar.classList.toggle('open');overlay.classList.toggle('show');}); overlay.addEventListener('click',close);
   document.querySelectorAll('.nav-item[data-page]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.nav-item[data-page]').forEach(x=>x.classList.remove('active'));btn.classList.add('active');const label=btn.textContent.trim();document.getElementById('pageTitle').textContent=label;btn.dataset.page==='dashboard'?renderStageTwoDashboard():btn.dataset.page==='orders'?renderOrdersPage():btn.dataset.page==='stores'?renderStoresPage():btn.dataset.page==='drivers'?renderDriversPage():btn.dataset.page==='users'?renderUsersPage():btn.dataset.page==='reports'?renderReportsPage():btn.dataset.page==='system'?renderSystemPage():btn.dataset.page==='settings'?renderSecurityPage():renderPlaceholder(btn.dataset.page,label);close();}));
-  document.getElementById('logoutBtn').addEventListener('click',async()=>{await supabase.auth.signOut();renderLogin();});
+  document.getElementById('logoutBtn').addEventListener('click',async()=>{
+    try{ await deactivateCurrentPushDevice(); }catch(_){}
+    await supabase.auth.signOut();
+    renderLogin();
+  });
 }
 async function boot() {
   if (!isSupabaseConfigured()) return renderSetup();
