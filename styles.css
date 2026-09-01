@@ -1006,3 +1006,7 @@ body{overflow-x:hidden;}
   table.mobile-stack-table td{display:table-cell!important;}
   table.mobile-stack-table td::before{display:none!important;content:none!important;}
 }
+
+
+/* Stage 36 final fix: real push subscription health + PIN contact actions */
+.push-health-box{display:grid;gap:10px;margin:14px 0;padding:14px;border:1px solid #eceff3;border-radius:16px;background:#fafafa}.push-health-box>div{display:flex;justify-content:space-between;gap:12px;align-items:center}.push-health-box span{color:#7b8493;font-size:13px}.push-health-box strong{font-size:13px;text-align:left}.push-manager-actions{margin-top:12px}.pin-ready-message{margin:14px 0;padding:14px;border-radius:16px;background:#fff7ef;border:1px solid #ffd8b5}.pin-ready-message strong{display:block;margin-bottom:8px}.pin-ready-message p{margin:0;line-height:1.9;color:#4b5563}.pin-contact-actions{display:flex;flex-wrap:wrap;gap:8px}.pin-contact-actions button{flex:1 1 135px}.pin-code-modal h2 span{font-variant-numeric:tabular-nums;letter-spacing:2px}@media(max-width:640px){.push-health-box>div{align-items:flex-start;flex-direction:column;gap:3px}.pin-contact-actions{flex-direction:column}.pin-contact-actions button{width:100%;flex:auto}}
