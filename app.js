@@ -1847,13 +1847,17 @@ async function optimizeCategoryImage(file){
   if(!['image/png','image/jpeg','image/webp'].includes(file.type)) return file;
   try{
     const bitmap=await createImageBitmap(file);
-    const maxSide=640;
+    // Keep the exact artwork and aspect ratio: only downscale + compress, never crop.
+    const maxSide=320;
     const scale=Math.min(1,maxSide/Math.max(bitmap.width,bitmap.height));
     const width=Math.max(1,Math.round(bitmap.width*scale));
     const height=Math.max(1,Math.round(bitmap.height*scale));
     const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
-    const ctx=canvas.getContext('2d',{alpha:true});ctx.drawImage(bitmap,0,0,width,height);bitmap.close?.();
-    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/webp',0.82));
+    const ctx=canvas.getContext('2d',{alpha:true});
+    ctx.imageSmoothingEnabled=true;
+    ctx.imageSmoothingQuality='high';
+    ctx.drawImage(bitmap,0,0,width,height);bitmap.close?.();
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/webp',0.78));
     if(!blob) return file;
     if(scale===1 && blob.size>=file.size) return file;
     const base=(file.name||'category').replace(/\.[^.]+$/,'').replace(/[^a-zA-Z0-9_-]+/g,'_')||'category';
