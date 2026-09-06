@@ -485,8 +485,41 @@ async function safeRows(table) {
   try { const {data,error}=await supabase.from(table).select('*').limit(5000); return error?{ok:false,rows:[],error:error.message}:{ok:true,rows:data||[]}; }
   catch(e){ return {ok:false,rows:[],error:String(e)}; }
 }
+function normalizeAccountRoleV39(value='customer') {
+  const s=String(value||'customer').toLowerCase();
+  if (['business','store','merchant','store_owner'].includes(s)) return 'store_owner';
+  if (['driver','courier'].includes(s)) return 'driver';
+  if (['admin','superadmin'].includes(s)) return 'admin';
+  return 'customer';
+}
+async function safeAdminAccountIdentityV39() {
+  try {
+    const {data,error}=await supabase.rpc('admin_account_identity_v39');
+    return error?{ok:false,rows:[],error:error.message}:{ok:true,rows:data||[]};
+  } catch(e){ return {ok:false,rows:[],error:String(e)}; }
+}
+function mergeAdminUserIdentityV39(baseRows, identityRows) {
+  const ids=new Map((identityRows||[]).map(r=>[String(r.user_id),r]));
+  return (baseRows||[]).map(row=>{
+    const x=ids.get(String(row.user_id))||{};
+    const effectiveType=normalizeAccountRoleV39(x.account_role||row.effective_type||row.partner_type||'customer');
+    return {
+      ...row,
+      effective_type:effectiveType,
+      email:row.email||x.email||null,
+      phone:row.phone||x.phone||null,
+      metadata_full_name:row.metadata_full_name||x.metadata_full_name||null,
+      metadata_phone:row.metadata_phone||x.metadata_phone||null,
+    };
+  });
+}
 async function safeAdminUsers() {
-  try { const {data,error}=await supabase.rpc('admin_list_users'); return error?{ok:false,rows:[],error:error.message}:{ok:true,rows:data||[]}; }
+  try {
+    const [{data,error},identityR]=await Promise.all([supabase.rpc('admin_list_users'),safeAdminAccountIdentityV39()]);
+    if(error) return {ok:false,rows:[],error:error.message};
+    const merged=mergeAdminUserIdentityV39(data||[],identityR.ok?identityR.rows:[]);
+    return {ok:true,rows:merged.filter(r=>r.effective_type==='customer')};
+  }
   catch(e){ return {ok:false,rows:[],error:String(e)}; }
 }
 function withinDays(value, days=7) {
@@ -1034,13 +1067,20 @@ async function fetchStoresAdmin() {
   } catch(e) { return {ok:false,rows:[],error:String(e)}; }
 }
 async function loadStoreAdminLookups() {
-  const [ownersR,reviewsR,controlsR] = await Promise.all([
+  const [ownersR,reviewsR,controlsR,identityR] = await Promise.all([
     fetchLookupTable('partner_profiles','id,full_name,phone,email,partner_type'),
     fetchLookupTable('admin_store_reviews','*'),
-    fetchLookupTable('admin_store_controls','*')
+    fetchLookupTable('admin_store_controls','*'),
+    safeAdminAccountIdentityV39()
   ]);
+  const owners=new Map();
+  for(const x of (identityR.ok?identityR.rows:[])) owners.set(String(x.user_id),{id:x.user_id,full_name:x.metadata_full_name||'',phone:x.metadata_phone||x.phone||'',email:x.email||'',partner_type:normalizeAccountRoleV39(x.account_role)==='store_owner'?'business':normalizeAccountRoleV39(x.account_role)});
+  for(const p of (ownersR.rows||[])) {
+    const current=owners.get(String(p.id))||{};
+    owners.set(String(p.id),{...current,...p,full_name:p.full_name||current.full_name||'',phone:p.phone||current.phone||'',email:p.email||current.email||''});
+  }
   return {
-    owners:new Map((ownersR.rows||[]).map(r=>[String(r.id),r])),
+    owners,
     reviews:new Map((reviewsR.rows||[]).map(r=>[String(r.store_id),r])),
     controls:new Map((controlsR.rows||[]).map(r=>[String(r.store_id),r])),
     reviewTableOk:reviewsR.ok,
@@ -1316,11 +1356,20 @@ function buildDriverRows(orders,profiles,reviews,documents){
   return [...map.values()];
 }
 async function loadDriversAdminData(){
-  const [ordersR,profilesR,reviewsR,docsR,controlsR,assignmentsR,storesR]=await Promise.all([
-    fetchAdminRows('orders'),fetchAdminRows('partner_profiles'),fetchAdminRows('admin_driver_reviews','reviewed_at'),fetchAdminRows('admin_driver_documents','created_at'),fetchAdminRows('admin_user_controls','updated_at'),fetchAdminRows('driver_delivery_scope','updated_at'),fetchAdminRows('stores','created_at')
+  const [ordersR,profilesR,reviewsR,docsR,controlsR,assignmentsR,storesR,identityR]=await Promise.all([
+    fetchAdminRows('orders'),fetchAdminRows('partner_profiles'),fetchAdminRows('admin_driver_reviews','reviewed_at'),fetchAdminRows('admin_driver_documents','created_at'),fetchAdminRows('admin_user_controls','updated_at'),fetchAdminRows('driver_delivery_scope','updated_at'),fetchAdminRows('stores','created_at'),safeAdminAccountIdentityV39()
   ]);
   if(!ordersR.ok) return {ok:false,error:ordersR.error};
-  const profiles=profilesR.ok?profilesR.rows:[]; const reviews=reviewsR.ok?reviewsR.rows:[]; const docs=docsR.ok?docsR.rows:[];
+  const profileMap=new Map();
+  for(const x of (identityR.ok?identityR.rows:[])) {
+    if(normalizeAccountRoleV39(x.account_role)!=='driver') continue;
+    profileMap.set(String(x.user_id),{id:x.user_id,full_name:x.metadata_full_name||'',phone:x.metadata_phone||x.phone||'',email:x.email||'',partner_type:'driver'});
+  }
+  for(const p of (profilesR.ok?profilesR.rows:[])) {
+    const current=profileMap.get(String(p.id))||{};
+    profileMap.set(String(p.id),{...current,...p,full_name:p.full_name||current.full_name||'',phone:p.phone||current.phone||'',email:p.email||current.email||'',partner_type:String(p.partner_type||p.role||current.partner_type||'').toLowerCase()});
+  }
+  const profiles=[...profileMap.values()]; const reviews=reviewsR.ok?reviewsR.rows:[]; const docs=docsR.ok?docsR.rows:[];
   return {ok:true,orders:ordersR.rows,profiles,reviews,controls:controlsR.ok?controlsR.rows:[],documents:docs,assignments:assignmentsR.ok?assignmentsR.rows:[],stores:storesR.ok?storesR.rows:[],rows:buildDriverRows(ordersR.rows,profiles,reviews,docs)};
 }
 function renderDriverRows(rows){
@@ -1443,11 +1492,7 @@ function userSearchText(row) {
   return Object.values(row||{}).filter(v=>['string','number','boolean'].includes(typeof v)).join(' ').toLowerCase();
 }
 async function loadUsersAdminData() {
-  try {
-    const { data, error } = await supabase.rpc('admin_list_users');
-    if (error) return {ok:false,rows:[],error:error.message};
-    return {ok:true,rows:data||[]};
-  } catch(e) { return {ok:false,rows:[],error:String(e)}; }
+  return safeAdminUsers();
 }
 function renderUserRows(rows) {
   if (!rows.length) return `<tr><td colspan="6" class="muted-cell">لا توجد حسابات مطابقة للبحث أو الفلتر.</td></tr>`;
@@ -1462,11 +1507,10 @@ function renderUserRows(rows) {
 }
 function applyUsersFilters() {
   const q=(document.getElementById('usersSearch')?.value||'').trim().toLowerCase();
-  const type=document.getElementById('usersTypeFilter')?.value||'all';
   const access=document.getElementById('usersAccessFilter')?.value||'all';
-  usersPageState.filtered=usersPageState.rows.filter(r=>(!q||userSearchText(r).includes(q))&&(type==='all'||r.effective_type===type)&&(access==='all'||r.access_status===access));
+  usersPageState.filtered=usersPageState.rows.filter(r=>(!q||userSearchText(r).includes(q))&&(access==='all'||r.access_status===access));
   const body=document.getElementById('usersTableBody');if(body)body.innerHTML=renderUserRows(usersPageState.filtered);
-  const c=document.getElementById('usersResultCount');if(c)c.textContent=`${fmtNumber(usersPageState.filtered.length)} مستخدم`;
+  const c=document.getElementById('usersResultCount');if(c)c.textContent=`${fmtNumber(usersPageState.filtered.length)} عميل`;
   wireUserRowButtons();
 }
 function wireUserRowButtons(){document.querySelectorAll('.user-details-btn').forEach(b=>b.addEventListener('click',()=>{const row=usersPageState.rows.find(r=>String(r.user_id)===String(b.dataset.userId));if(row)openUserDetails(row);}));}
@@ -1526,12 +1570,13 @@ async function renderUsersPage() {
   const [{data:{user}},r]=await Promise.all([supabase.auth.getUser(),loadUsersAdminData()]);
   if(!r.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">👥</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة المستخدمين</h2><p>${escapeHtml(r.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage6_rls.sql</b> ثم أعد المحاولة.</p></section>`;return;}
   usersPageState.currentUserId=user?.id||null;usersPageState.rows=r.rows;usersPageState.filtered=r.rows;
-  const types={admin:0,store_owner:0,driver:0,customer:0};r.rows.forEach(x=>{if(types[x.effective_type]!==undefined)types[x.effective_type]++;});
-  content.innerHTML=`<section class="dashboard-hero"><div><span class="pill">إدارة يومية</span><h2>المستخدمون</h2><p>ابحث عن أي حساب، اعرف نوعه وحالته، وأدر صلاحية الوصول إلى لوحة الإدارة عند الحاجة.</p></div><button id="refreshUsers" class="secondary-btn">↻ تحديث المستخدمين</button></section>
-    <section class="store-summary-grid">${actionMetricCard('إجمالي المستخدمين',fmtNumber(r.rows.length),'كل الحسابات المسجلة','👥','users','all')}${actionMetricCard('المدراء',fmtNumber(types.admin),'لديهم صلاحية لوحة الإدارة','🛡️','users','admin')}${actionMetricCard('أصحاب المتاجر',fmtNumber(types.store_owner),'حسابات أصحاب المتاجر','🏪','users','store_owner')}${actionMetricCard('السائقون',fmtNumber(types.driver),'حسابات السائقين','🚚','users','driver')}</section>
-    <section class="stores-toolbar"><label class="search-box">🔎<input id="usersSearch" type="search" placeholder="ابحث بالاسم، البريد، الهاتف..." /></label><select id="usersTypeFilter"><option value="all">كل أنواع الحساب</option><option value="admin">مدير</option><option value="store_owner">صاحب متجر</option><option value="driver">سائق</option><option value="customer">عميل</option></select><select id="usersAccessFilter"><option value="all">كل حالات المتابعة</option>${USER_ACCESS_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select><span id="usersResultCount" class="tag">${fmtNumber(r.rows.length)} مستخدم</span></section>
-    <article class="panel stores-panel"><div class="table-wrap"><table class="data-table users-table"><thead><tr><th>المستخدم</th><th>نوع الحساب</th><th>صلاحية الإدارة</th><th>الحالة</th><th>آخر دخول</th><th></th></tr></thead><tbody id="usersTableBody">${renderUserRows(r.rows)}</tbody></table></div></article>`;
-  document.getElementById('refreshUsers')?.addEventListener('click',renderUsersPage);document.getElementById('usersSearch')?.addEventListener('input',applyUsersFilters);document.getElementById('usersTypeFilter')?.addEventListener('change',applyUsersFilters);document.getElementById('usersAccessFilter')?.addEventListener('change',applyUsersFilters);document.querySelectorAll('[data-metric-action="users"]').forEach(b=>b.addEventListener('click',()=>{const sel=document.getElementById('usersTypeFilter');if(sel)sel.value=b.dataset.metricValue||'all';applyUsersFilters();document.querySelector('.stores-toolbar')?.scrollIntoView({behavior:'smooth',block:'start'});}));wireUserRowButtons();consumePendingAdminTarget('users');
+  const suspendedCount=r.rows.filter(x=>x.access_status==='suspended').length;
+  const activeCount=r.rows.length-suspendedCount;
+  content.innerHTML=`<section class="dashboard-hero"><div><span class="pill">إدارة يومية</span><h2>المستخدمون / العملاء</h2><p>هذه الصفحة مخصصة للعملاء فقط. المتاجر تظهر في قسم المتاجر والسائقون في قسم السائقين بدون تكرار.</p></div><button id="refreshUsers" class="secondary-btn">↻ تحديث العملاء</button></section>
+    <section class="store-summary-grid">${actionMetricCard('إجمالي العملاء',fmtNumber(r.rows.length),'حسابات العملاء فقط','👥','users','all')}${actionMetricCard('نشطون',fmtNumber(activeCount),'حسابات العملاء المتاحة','✅','users-access','active')}${actionMetricCard('موقوفون',fmtNumber(suspendedCount),'إيقاف إداري مؤقت','⏸️','users-access','suspended')}</section>
+    <section class="stores-toolbar"><label class="search-box">🔎<input id="usersSearch" type="search" placeholder="ابحث باسم العميل، البريد، الهاتف..." /></label><select id="usersAccessFilter"><option value="all">كل حالات المتابعة</option>${USER_ACCESS_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select><span id="usersResultCount" class="tag">${fmtNumber(r.rows.length)} عميل</span></section>
+    <article class="panel stores-panel"><div class="table-wrap"><table class="data-table users-table"><thead><tr><th>العميل</th><th>نوع الحساب</th><th>صلاحية الإدارة</th><th>الحالة</th><th>آخر دخول</th><th></th></tr></thead><tbody id="usersTableBody">${renderUserRows(r.rows)}</tbody></table></div></article>`;
+  document.getElementById('refreshUsers')?.addEventListener('click',renderUsersPage);document.getElementById('usersSearch')?.addEventListener('input',applyUsersFilters);document.getElementById('usersAccessFilter')?.addEventListener('change',applyUsersFilters);document.querySelectorAll('[data-metric-action="users-access"]').forEach(b=>b.addEventListener('click',()=>{const sel=document.getElementById('usersAccessFilter');if(sel)sel.value=b.dataset.metricValue||'all';applyUsersFilters();document.querySelector('.stores-toolbar')?.scrollIntoView({behavior:'smooth',block:'start'});}));wireUserRowButtons();consumePendingAdminTarget('users');
 }
 
 
