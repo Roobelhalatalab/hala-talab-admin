@@ -1158,7 +1158,7 @@ async function hardDeleteStore(row){
   const typed=prompt(`اكتب اسم المتجر بالضبط للتأكيد:\n${storeName(row)}`,'') ?? '';
   if(typed.trim()!==String(storeName(row)).trim()){if(box)box.innerHTML='<div class="alert warning">تم إلغاء الحذف: الاسم غير مطابق.</div>';return false;}
   if(!confirm('تأكيد أخير: حذف المتجر نهائيًا؟'))return false;
-  const {error}=await supabase.rpc('admin_hard_delete_store',{p_store_id:row.id});
+  const {error}=await supabase.rpc('admin_hard_delete_store_v39',{p_store_id:row.id});
   if(error){if(box)box.innerHTML=`<div class="alert error">${escapeHtml(error.message)}</div>`;return false;}
   await systemAudit('hard_delete_store','store',row.id,{store_name:storeName(row)});
   return true;
@@ -1224,7 +1224,7 @@ function openStoreDetails(row) {
           ? '<span class="store-activated-badge">✓ المتجر مفعّل</span>' : ''}
         ${controlForStore(row).lifecycle_status!=='archived'?'<button type="button" class="danger-btn compact danger-outline" data-store-op="archive">أرشفة / إغلاق نهائي</button>':''}
       </div>
-      <details class="danger-zone"><summary>منطقة خطرة: حذف نهائي</summary><p>يستخدم فقط للمدير الرئيسي، والنظام يرفض الحذف إذا للمتجر طلبات تاريخية.</p><button type="button" class="danger-btn compact" data-store-op="hard_delete">حذف المتجر نهائيًا</button></details>
+      <details class="danger-zone"><summary>منطقة خطرة: حذف نهائي</summary><p>يحذف المتجر نهائيًا من المنصة ويزيل ظهوره لدى العملاء. هذا الإجراء غير قابل للتراجع.</p><button type="button" class="danger-btn compact" data-store-op="hard_delete">حذف المتجر نهائيًا</button></details>
       <div id="storeOperationalMessage"></div>
     </div>
     <div class="review-editor">
@@ -1387,7 +1387,7 @@ function openDriverDetails(row){
     <div class="details-grid admin-driver-details">${detailItem('اسم السائق',driverName(row))}${detailItem('الهاتف',driverPhone(row))}${detailItem('البريد',driverEmail(row))}${detailItem('طلبات ظهر بها',fmtNumber(row.deliveries))}${detailItem('آخر نشاط',row.last_order_at?fmtDate(row.last_order_at):'غير متوفر')}${detailItem('نوع الحساب',pick(p,['partner_type'],'غير محدد'))}${detailItem('عدد المستندات',fmtNumber(docs.length))}</div>
     <section class="driver-doc-section"><div class="panel-head"><div><span>توزيع التوصيل</span><h3>ربط السائق بالمتجر</h3></div><span class="tag">${escapeHtml(driverTypeLabel(driverAssignmentFor(row.id).driver_type))}</span></div><p class="panel-note">يمكن ربط أكثر من سائق بنفس المتجر. السائق التابع لمتجر لن يرى أو يستلم طلبات متجر آخر.</p><div class="review-editor driver-review-editor"><label>نوع السائق<select id="driverDeliveryType"><option value="store" ${driverAssignmentFor(row.id).driver_type!=='hala'?'selected':''}>تابع لمتجر</option><option value="hala" ${driverAssignmentFor(row.id).driver_type==='hala'?'selected':''}>سائق هلا طلب — كل المتاجر</option></select></label><label id="driverStoreSelectWrap">المتجر المرتبط<select id="driverAssignedStore">${driverStoreOptionsHtml(driverAssignmentFor(row.id).store_id)}</select></label><button class="primary-btn compact" id="saveDriverAssignment">حفظ ربط السائق</button></div><div id="driverAssignmentMessage"></div></section>
     <section class="driver-doc-section"><div class="panel-head"><div><span>الوثائق</span><h3>مستندات السائق</h3></div><span class="tag">${fmtNumber(docs.length)} مستند</span></div>${renderDriverDocs(row.id)}</section>
-    <div class="store-operational-actions"><div class="panel-head"><div><span>إدارة التشغيل</span><h3>حالة حساب السائق</h3></div><span class="tag">${control.access_status==='blocked'?'موقوف نهائيًا':control.access_status==='suspended'?'موقوف مؤقتًا':'نشط'}</span></div><p class="panel-note">الإيقاف المؤقت قابل للرجوع. الإيقاف النهائي يحظر السائق من العمل لكنه يبقى ظاهرًا في السجل الإداري لحفظ تاريخ الطلبات.</p><div class="inline-actions wrap-actions">${control.access_status==='blocked'?'<button type="button" class="primary-btn compact" id="reactivateDriver">إعادة فتح الحساب</button>':control.access_status==='suspended'?'<button type="button" class="primary-btn compact" id="reactivateDriver">إعادة تفعيل السائق</button><button type="button" class="danger-btn compact danger-outline" id="blockDriver">إيقاف نهائي (يبقى بالسجل)</button>':'<button type="button" class="danger-btn compact" id="suspendDriver">إيقاف السائق مؤقتًا</button><button type="button" class="danger-btn compact danger-outline" id="blockDriver">إيقاف نهائي (يبقى بالسجل)</button>'}</div><div id="driverOperationalMessage"></div></div>
+    <div class="store-operational-actions"><div class="panel-head"><div><span>إدارة التشغيل</span><h3>حالة حساب السائق</h3></div><span class="tag">${control.access_status==='blocked'?'موقوف نهائيًا':control.access_status==='suspended'?'موقوف مؤقتًا':'نشط'}</span></div><p class="panel-note">الإيقاف المؤقت أو النهائي قابل للإرجاع من الإدارة. الحذف النهائي أدناه يزيل حساب السائق من المنصة ولا يمكن التراجع عنه.</p><div class="inline-actions wrap-actions">${control.access_status==='blocked'?'<button type="button" class="primary-btn compact" id="reactivateDriver">إعادة فتح الحساب</button>':control.access_status==='suspended'?'<button type="button" class="primary-btn compact" id="reactivateDriver">إعادة تفعيل السائق</button><button type="button" class="danger-btn compact danger-outline" id="blockDriver">إيقاف نهائي</button>':'<button type="button" class="danger-btn compact" id="suspendDriver">إيقاف السائق مؤقتًا</button><button type="button" class="danger-btn compact danger-outline" id="blockDriver">إيقاف نهائي</button>'}</div><details class="danger-zone"><summary>منطقة خطرة: حذف نهائي</summary><p>يحذف حساب السائق نهائيًا من المنصة. الطلبات التاريخية تبقى بدون ربط بالسائق عندما تسمح علاقات قاعدة البيانات بذلك.</p><button type="button" class="danger-btn compact" id="hardDeleteDriver">حذف السائق نهائيًا</button></details><div id="driverOperationalMessage"></div></div>
     <div class="review-editor driver-review-editor"><label>قرار المراجعة<select id="driverReviewStatus">${driverReviewOptionsHtml(review.review_status)}</select></label><label>ملاحظات الإدارة<textarea id="driverReviewNotes" rows="3" placeholder="ملاحظة اختيارية للإدارة...">${escapeHtml(review.notes||'')}</textarea></label><button class="primary-btn compact" id="saveDriverReview">حفظ المراجعة</button></div><div id="driverReviewMessage"></div>
     <details class="raw-details"><summary>بيانات الملف التقنية</summary><div class="raw-grid">${Object.entries(p).map(([k,v])=>detailItem(k,typeof v==='object'?JSON.stringify(v):v)).join('')||'<div class="muted-cell">لا توجد بيانات إضافية.</div>'}</div></details>
   </section>`;
@@ -1395,6 +1395,20 @@ function openDriverDetails(row){
   document.getElementById('suspendDriver')?.addEventListener('click',async()=>{if(await setDriverOperationalStatus(row,'suspended')){overlay.remove();openDriverDetails(row);}});
   document.getElementById('blockDriver')?.addEventListener('click',async()=>{if(await setDriverOperationalStatus(row,'blocked')){overlay.remove();openDriverDetails(row);}});
   document.getElementById('reactivateDriver')?.addEventListener('click',async()=>{if(await setDriverOperationalStatus(row,'active')){overlay.remove();openDriverDetails(row);}});
+  document.getElementById('hardDeleteDriver')?.addEventListener('click',async()=>{if(await hardDeleteDriver(row)){overlay.remove();await renderDriversPage();}});
+}
+async function hardDeleteDriver(row){
+  const box=document.getElementById('driverOperationalMessage');
+  const expected=String(driverName(row)).trim();
+  const typed=prompt(`اكتب اسم السائق بالضبط للتأكيد:
+${expected}`,'') ?? '';
+  if(typed.trim()!==expected){if(box)box.innerHTML='<div class="alert warning">تم إلغاء الحذف: الاسم غير مطابق.</div>';return false;}
+  if(!confirm('تأكيد أخير: حذف حساب السائق نهائيًا؟ هذا الإجراء غير قابل للتراجع.'))return false;
+  if(box)box.innerHTML='<div class="alert">جارٍ حذف حساب السائق نهائيًا...</div>';
+  const {error}=await supabase.rpc('admin_hard_delete_driver_v39',{p_driver_id:row.id});
+  if(error){if(box)box.innerHTML=`<div class="alert error">تعذر حذف السائق: ${escapeHtml(error.message)}</div>`;return false;}
+  await systemAudit('hard_delete_driver','driver',row.id,{driver_name:driverName(row)});
+  return true;
 }
 async function saveDriverReview(row){const status=document.getElementById('driverReviewStatus')?.value||'pending';const notes=document.getElementById('driverReviewNotes')?.value?.trim()||'';const btn=document.getElementById('saveDriverReview'),box=document.getElementById('driverReviewMessage');btn.disabled=true;btn.textContent='جارٍ الحفظ...';box.innerHTML='';const {data:{user}}=await supabase.auth.getUser();const payload={driver_id:row.id,review_status:status,notes,reviewed_by:user?.id||null,reviewed_at:new Date().toISOString()};const {data,error}=await supabase.from('admin_driver_reviews').upsert(payload,{onConflict:'driver_id'}).select().maybeSingle();btn.disabled=false;btn.textContent='حفظ المراجعة';if(error){box.innerHTML=`<div class="alert error">تعذر حفظ المراجعة: ${escapeHtml(error.message)}. شغّل ملف admin_stage5_rls.sql مرة واحدة.</div>`;return;}driversPageState.reviews.set(String(row.id),data||payload);box.innerHTML='<div class="alert success">تم حفظ مراجعة السائق بنجاح.</div>';applyDriversFilters();}
 async function renderDriversPage(){const content=document.getElementById('content');content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل السائقين...</h2><p>يتم تجهيز السائقين وحالات المراجعة.</p></section>`;const d=await loadDriversAdminData();if(!d.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">🚚</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة بيانات السائقين</h2><p>${escapeHtml(d.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage5_rls.sql</b> ثم أعد المحاولة.</p></section>`;return;}driversPageState.rows=d.rows;driversPageState.filtered=d.rows;driversPageState.orders=d.orders;driversPageState.profiles=new Map(d.profiles.map(p=>[String(p.id),p]));driversPageState.reviews=new Map(d.reviews.map(r=>[String(r.driver_id),r]));driversPageState.controls=new Map((d.controls||[]).map(r=>[String(r.user_id),r]));driversPageState.documents=d.documents;driversPageState.assignments=new Map((d.assignments||[]).map(r=>[String(r.driver_id),r]));driversPageState.stores=new Map((d.stores||[]).map(r=>[String(r.id),r]));
@@ -1468,7 +1482,7 @@ function openUserDetails(row) {
       ${detailItem('تاريخ إنشاء الحساب',fmtDate(row.created_at))}${detailItem('آخر تسجيل دخول',row.last_sign_in_at?fmtDate(row.last_sign_in_at):'لم يسجل دخولًا')}${detailItem('متاجر مملوكة',fmtNumber(row.store_count||0))}${detailItem('طلبات كسائق',fmtNumber(row.driver_order_count||0))}
     </div>
     <div class="permission-banner ${row.is_admin?'review-approved':'review-pending'}"><span>صلاحية لوحة الإدارة</span><strong>${row.is_admin?'مدير — مسموح بالدخول':'بدون صلاحية إدارية'}</strong><small>${self?'هذا هو حساب الإدارة المفتوح حاليًا؛ لا يمكن سحب صلاحيته من نفس الجلسة.':'إدارة صلاحيات المدراء تتم من قسم الأمان والصلاحيات فقط.'}</small></div>
-    ${!self?`<div class="store-operational-actions"><div class="panel-head"><div><span>إدارة الحساب</span><h3>حالة استخدام الحساب</h3></div><span class="tag">${row.access_status==='suspended'?'موقوف مؤقتًا':'نشط'}</span></div><p class="panel-note">هذا الإجراء مستقل عن صلاحية لوحة الإدارة.</p><div class="inline-actions">${row.access_status==='suspended'?'<button type="button" class="primary-btn compact" id="reactivateUserAccount">إعادة تفعيل الحساب</button>':'<button type="button" class="danger-btn compact" id="suspendUserAccount">إيقاف الحساب مؤقتًا</button>'}</div></div>`:''}
+    ${!self?`<div class="store-operational-actions"><div class="panel-head"><div><span>إدارة الحساب</span><h3>حالة استخدام الحساب</h3></div><span class="tag">${row.access_status==='suspended'?'موقوف مؤقتًا':'نشط'}</span></div><p class="panel-note">هذا الإجراء مستقل عن صلاحية لوحة الإدارة.</p><div class="inline-actions">${row.access_status==='suspended'?'<button type="button" class="primary-btn compact" id="reactivateUserAccount">إعادة تفعيل الحساب</button>':'<button type="button" class="danger-btn compact" id="suspendUserAccount">إيقاف الحساب مؤقتًا</button>'}</div><details class="danger-zone"><summary>منطقة خطرة: حذف نهائي</summary><p>يحذف حساب العميل نهائيًا. لا يسمح من هنا بحذف مدير أو صاحب متجر أو سائق؛ يتم حذفهم من القسم المخصص لهم.</p><button type="button" class="danger-btn compact" id="hardDeleteUser">حذف المستخدم نهائيًا</button></details><div id="userDeleteMessage"></div></div>`:''}
     <div class="review-editor user-permission-editor">
       <label>حالة المتابعة الإدارية<select id="userAccessStatus">${accessOptionsHtml(row.access_status)}</select></label>
       <label>ملاحظات الإدارة<textarea id="userAdminNotes" rows="3" placeholder="ملاحظات داخلية اختيارية...">${escapeHtml(row.admin_notes||'')}</textarea></label>
@@ -1479,6 +1493,20 @@ function openUserDetails(row) {
   document.body.appendChild(overlay);const close=()=>overlay.remove();document.getElementById('closeUserModal').addEventListener('click',close);overlay.addEventListener('click',e=>{if(e.target===overlay)close();});document.getElementById('saveUserPermissions').addEventListener('click',()=>saveUserPermissions(row));
   document.getElementById('suspendUserAccount')?.addEventListener('click',async()=>{document.getElementById('userAccessStatus').value='suspended';if(confirm('إيقاف هذا الحساب مؤقتًا؟'))await saveUserPermissions(row);});
   document.getElementById('reactivateUserAccount')?.addEventListener('click',async()=>{document.getElementById('userAccessStatus').value='active';if(confirm('إعادة تفعيل هذا الحساب؟'))await saveUserPermissions(row);});
+  document.getElementById('hardDeleteUser')?.addEventListener('click',async()=>{if(await hardDeleteUser(row)){overlay.remove();await renderUsersPage();}});
+}
+async function hardDeleteUser(row){
+  const box=document.getElementById('userDeleteMessage')||document.getElementById('userPermissionMessage');
+  const expected=String(row.email||userDisplayName(row)).trim();
+  const typed=prompt(`اكتب البريد أو الاسم الظاهر بالضبط للتأكيد:
+${expected}`,'') ?? '';
+  if(typed.trim()!==expected){if(box)box.innerHTML='<div class="alert warning">تم إلغاء الحذف: قيمة التأكيد غير مطابقة.</div>';return false;}
+  if(!confirm('تأكيد أخير: حذف هذا المستخدم نهائيًا؟ هذا الإجراء غير قابل للتراجع.'))return false;
+  if(box)box.innerHTML='<div class="alert">جارٍ حذف المستخدم نهائيًا...</div>';
+  const {error}=await supabase.rpc('admin_hard_delete_user_v39',{p_user_id:row.user_id});
+  if(error){if(box)box.innerHTML=`<div class="alert error">تعذر حذف المستخدم: ${escapeHtml(error.message)}</div>`;return false;}
+  await systemAudit('hard_delete_user','user',row.user_id,{email:row.email||'',display_name:userDisplayName(row)});
+  return true;
 }
 async function saveUserPermissions(row) {
   const btn=document.getElementById('saveUserPermissions'),box=document.getElementById('userPermissionMessage');
@@ -1812,21 +1840,43 @@ function renderClientCategories(){
 }
 function openNewClientCategory(){ systemPageState.editingClientCategoryId='__new__'; renderSystemTab(); setTimeout(()=>document.getElementById('clientCategoryNameAr')?.focus(),30); }
 
+async function optimizeCategoryImage(file){
+  // Stage 39: compress public category artwork before upload so Client loads it faster.
+  // Animated GIFs stay untouched because Canvas would remove animation.
+  if(!file || file.type==='image/gif') return file;
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)) return file;
+  try{
+    const bitmap=await createImageBitmap(file);
+    const maxSide=640;
+    const scale=Math.min(1,maxSide/Math.max(bitmap.width,bitmap.height));
+    const width=Math.max(1,Math.round(bitmap.width*scale));
+    const height=Math.max(1,Math.round(bitmap.height*scale));
+    const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+    const ctx=canvas.getContext('2d',{alpha:true});ctx.drawImage(bitmap,0,0,width,height);bitmap.close?.();
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/webp',0.82));
+    if(!blob) return file;
+    if(scale===1 && blob.size>=file.size) return file;
+    const base=(file.name||'category').replace(/\.[^.]+$/,'').replace(/[^a-zA-Z0-9_-]+/g,'_')||'category';
+    return new File([blob],`${base}.webp`,{type:'image/webp',lastModified:Date.now()});
+  }catch(_){return file;}
+}
+
 async function uploadClientCategoryImage(){
   const fileInput=document.getElementById('clientCategoryImageFile');
   const urlInput=document.getElementById('clientCategoryImage');
   const msg=document.getElementById('clientCategoryMessage');
-  const file=fileInput?.files?.[0];
-  if(!file){if(msg)msg.textContent='اختر صورة من الجهاز أولًا.';return;}
-  if(file.size>5*1024*1024){if(msg)msg.textContent='حجم الصورة يجب ألا يتجاوز 5 MB.';return;}
+  const originalFile=fileInput?.files?.[0];
+  if(!originalFile){if(msg)msg.textContent='اختر صورة من الجهاز أولًا.';return;}
+  if(originalFile.size>8*1024*1024){if(msg)msg.textContent='حجم الصورة الأصلي يجب ألا يتجاوز 8 MB.';return;}
   const allowed=['image/png','image/jpeg','image/webp','image/gif'];
-  if(!allowed.includes(file.type)){if(msg)msg.textContent='الصيغة غير مدعومة. استخدم PNG أو JPG أو WEBP أو GIF.';return;}
-  if(msg)msg.textContent='جارٍ رفع الصورة...';
+  if(!allowed.includes(originalFile.type)){if(msg)msg.textContent='الصيغة غير مدعومة. استخدم PNG أو JPG أو WEBP أو GIF.';return;}
+  if(msg)msg.textContent='جارٍ تحسين الصورة ورفعها...';
+  const file=await optimizeCategoryImage(originalFile);
   const {data:{user},error:userError}=await supabase.auth.getUser();
   if(userError||!user){if(msg)msg.textContent='تعذر التحقق من حساب الإدارة. سجل الدخول من جديد.';return;}
-  const ext=(file.name.split('.').pop()||'jpg').toLowerCase().replace(/[^a-z0-9]/g,'')||'jpg';
+  const ext=(file.name.split('.').pop()||'webp').toLowerCase().replace(/[^a-z0-9]/g,'')||'webp';
   const path=`${user.id}/${Date.now()}_${Math.random().toString(36).slice(2,9)}.${ext}`;
-  const {error:uploadError}=await supabase.storage.from('system-category-images').upload(path,file,{cacheControl:'3600',upsert:false,contentType:file.type});
+  const {error:uploadError}=await supabase.storage.from('system-category-images').upload(path,file,{cacheControl:'31536000',upsert:false,contentType:file.type});
   if(uploadError){if(msg)msg.textContent='تعذر رفع الصورة: '+uploadError.message;return;}
   const {data:publicData}=supabase.storage.from('system-category-images').getPublicUrl(path);
   const publicUrl=publicData?.publicUrl||'';
@@ -1835,16 +1885,16 @@ async function uploadClientCategoryImage(){
   const holder=document.querySelector('.category-image-preview');
   if(holder){holder.innerHTML=`<img src="${escapeHtml(publicUrl)}?admin_preview=${Date.now()}" alt="صورة التصنيف">`;}
 
-  // Stage 21: when editing an existing category, persist the new image URL immediately.
-  // This removes the easy-to-miss second Save step and guarantees Client receives the new URL.
   const editId=systemPageState.editingClientCategoryId;
+  const saved=Math.max(0,originalFile.size-file.size);
+  const sizeNote=saved>0?` (${Math.round(originalFile.size/1024)}KB ← ${Math.round(file.size/1024)}KB)`:'';
   if(editId && editId!=='__new__') {
     const {error:saveImageError}=await supabase.rpc('admin_update_system_category_image_v1',{p_id:editId,p_image_url:publicUrl});
     if(saveImageError){if(msg)msg.textContent='تم رفع الصورة، لكن تعذر حفظ رابطها: '+saveImageError.message;return;}
-    if(msg)msg.textContent='تم رفع الصورة وحفظها للتصنيف ✓';
+    if(msg)msg.textContent=`تم تحسين الصورة وحفظها للتصنيف ✓${sizeNote}`;
     await loadSystemData();
   } else if(msg) {
-    msg.textContent='تم رفع الصورة ✓ وسيُحفظ رابطها عند حفظ التصنيف.';
+    msg.textContent=`تم تحسين الصورة ورفعها ✓${sizeNote} وسيُحفظ رابطها عند حفظ التصنيف.`;
   }
 }
 
@@ -1951,7 +2001,7 @@ function filteredOfferRows(rows,titleFn){return rows.filter(r=>{const f=systemPa
 function offerDateLabel(v){if(!v)return '—';return fmtDate(v);}
 function offerDetailsHtml(r,kind){
   const title=kind==='coupon'?couponTitle(r):promoTitle(r);
-  return `<div class="details-grid offer-details-grid">${detailItem(kind==='coupon'?'الكود':'العرض',title)}${detailItem('المتجر',systemStoreName(r.store_id))}${detailItem('الخصم',offerDiscountValue(r))}${detailItem('الحالة',offerStatusLabel(r))}${detailItem('البداية',offerDateLabel(offerStartValue(r)))}${detailItem('النهاية',offerDateLabel(offerEndValue(r)))}</div><details class="raw-details"><summary>بيانات إضافية</summary><div class="raw-grid">${Object.entries(r).map(([k,v])=>detailItem(k,typeof v==='object'?JSON.stringify(v):v)).join('')}</div></details>`;
+  return `<div class="details-grid offer-details-grid">${detailItem(kind==='coupon'?'الكود':'العرض',title)}${detailItem('المصدر','المتجر')}${detailItem('المتجر',systemStoreName(r.store_id))}${detailItem('الخصم',offerDiscountValue(r))}${detailItem('الاستخدام',kind==='coupon'?'مرة واحدة لكل عميل':(r.per_user_limit?`حد العميل: ${r.per_user_limit}`:'متكرر حتى الانتهاء'))}${detailItem('الحالة',offerStatusLabel(r))}${detailItem('البداية',offerDateLabel(offerStartValue(r)))}${detailItem('النهاية',offerDateLabel(offerEndValue(r)))}</div><details class="raw-details"><summary>بيانات إضافية</summary><div class="raw-grid">${Object.entries(r).map(([k,v])=>detailItem(k,typeof v==='object'?JSON.stringify(v):v)).join('')}</div></details>`;
 }
 function openOfferDetails(r,kind){
   const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.id='offerModal';
@@ -1962,15 +2012,20 @@ async function toggleOffer(r,kind){
   const table=kind==='coupon'?systemPageState.couponTable:systemPageState.promotionTable;const field=offerActiveField(r);
   if(!table||!field){alert('هذا العنصر لا يحتوي حقل تفعيل يمكن تعديله.');return;}
   const next=!systemBool(r[field]);if(!confirm(`${next?'تفعيل':'إيقاف'} ${kind==='coupon'?'الكوبون':'العرض'}؟`))return;
-  const {error}=await supabase.from(table).update({[field]:next}).eq('id',r.id);if(error){alert('تعذر تحديث الحالة: '+error.message);return;}
-  await systemAudit(next?'activate_offer':'pause_offer',kind,r.id,{table});await loadSystemData();renderSystemTab();
+  const rpc=kind==='coupon'?'admin_set_store_coupon_active_v39':'admin_set_store_offer_active_v39';
+  const params=kind==='coupon'?{p_coupon_id:r.id,p_is_active:next}:{p_offer_id:r.id,p_is_active:next};
+  const {error}=await supabase.rpc(rpc,params);if(error){alert('تعذر تحديث الحالة: '+error.message);return;}
+  await systemAudit(next?'activate_offer':'pause_offer',kind,r.id,{table,source:'store'});await loadSystemData();renderSystemTab();
 }
 async function deleteOffer(r,kind){
   const table=kind==='coupon'?systemPageState.couponTable:systemPageState.promotionTable;if(!table||!r.id)return;
-  const name=kind==='coupon'?couponTitle(r):promoTitle(r);if(!confirm(`حذف ${kind==='coupon'?'الكوبون':'العرض'} "${name}"؟`))return;
-  const {error}=await supabase.from(table).delete().eq('id',r.id);if(error){alert('تعذر الحذف: '+error.message);return;}
-  await systemAudit('delete_offer',kind,r.id,{table,name});await loadSystemData();renderSystemTab();
+  const name=kind==='coupon'?couponTitle(r):promoTitle(r);if(!confirm(`حذف ${kind==='coupon'?'الكوبون':'العرض'} "${name}" الذي أنشأه المتجر؟ لا يمكن التراجع.`))return;
+  const rpc=kind==='coupon'?'admin_delete_store_coupon_v39':'admin_delete_store_offer_v39';
+  const params=kind==='coupon'?{p_coupon_id:r.id}:{p_offer_id:r.id};
+  const {error}=await supabase.rpc(rpc,params);if(error){alert('تعذر الحذف: '+error.message);return;}
+  await systemAudit('delete_offer',kind,r.id,{table,name,source:'store'});await loadSystemData();renderSystemTab();
 }
+
 async function editOffer(r,kind){
   const table=kind==='coupon'?systemPageState.couponTable:systemPageState.promotionTable;if(!table||!r.id)return;
   const payload={};
@@ -2123,8 +2178,8 @@ function renderSystemOffers() {
   <div class="offers-stack">
   <article class="panel platform-campaigns-panel"><div class="panel-head"><div><span>هلا طلب / الإدارة</span><h3>كوبونات هلا طلب</h3><p class="panel-note">مملوكة للإدارة وتُطبّق مركزيًا. النسخ المتزامنة لا تُعرض لصاحب المتجر ضمن كوبوناته.</p></div><span class="tag">${fmtNumber(platformRows.length)}</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>الكود</th><th>النطاق</th><th>الخصم</th><th>العملاء المستفيدون</th><th>الأهلية</th><th>الفترة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>${platformCouponRowsHtml(platformRows)}</tbody></table></div></article>
   <article class="panel platform-campaigns-panel"><div class="panel-head"><div><span>هلا طلب / الإدارة</span><h3>عروض هلا طلب</h3><p class="panel-note">عروض تنشئها الإدارة لمتجر محدد، وتبقى ملكيتها للإدارة.</p></div><span class="tag">${fmtNumber(platformOfferRows.length)}</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>العرض</th><th>المتجر المستهدف</th><th>الخصم</th><th>الفترة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>${platformOfferRowsHtml(platformOfferRows)}</tbody></table></div></article>
-  <article class="panel"><div class="panel-head"><div><span>المتاجر</span><h3>كوبونات المتاجر</h3><p class="panel-note">يظهر هنا فقط ما أنشأه أصحاب المتاجر.</p></div><span class="tag">${fmtNumber(couponRows.length)}</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>الكود</th><th>المتجر</th><th>الخصم</th><th>الفترة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>${couponRows.length?couponRows.map(r=>`<tr><td><strong>${escapeHtml(couponTitle(r))}</strong></td><td>${escapeHtml(systemStoreName(r.store_id))}</td><td>${escapeHtml(String(offerDiscountValue(r)))}</td><td><small>${escapeHtml(offerDateLabel(offerStartValue(r)))} → ${escapeHtml(offerDateLabel(offerEndValue(r)))}</small></td><td><span class="status-chip ${offerStatusClass(r)}">${offerStatusLabel(r)}</span></td><td>${renderOfferActions(r,'coupon')}</td></tr>`).join(''):`<tr><td colspan="6" class="muted-cell">لا توجد كوبونات متجر مطابقة.</td></tr>`}</tbody></table></div></article>
-  <article class="panel"><div class="panel-head"><div><span>المتاجر</span><h3>عروض المتاجر</h3><p class="panel-note">يظهر هنا فقط ما أنشأه أصحاب المتاجر.</p></div><span class="tag">${fmtNumber(promoRows.length)}</span></div>${systemPageState.promotionTable?`<div class="table-wrap"><table class="data-table"><thead><tr><th>العرض</th><th>المتجر</th><th>الخصم</th><th>الفترة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>${promoRows.length?promoRows.map(r=>`<tr><td><strong>${escapeHtml(promoTitle(r))}</strong></td><td>${escapeHtml(systemStoreName(r.store_id))}</td><td>${escapeHtml(String(offerDiscountValue(r)))}</td><td><small>${escapeHtml(offerDateLabel(offerStartValue(r)))} → ${escapeHtml(offerDateLabel(offerEndValue(r)))}</small></td><td><span class="status-chip ${offerStatusClass(r)}">${offerStatusLabel(r)}</span></td><td>${renderOfferActions(r,'promotion')}</td></tr>`).join(''):`<tr><td colspan="6" class="muted-cell">لا توجد عروض متجر مطابقة.</td></tr>`}</tbody></table></div>`:`<div class="muted-cell system-pad">لا يوجد جدول عروض متاح حاليًا.</div>`}</article></div>`;
+  <article class="panel"><div class="panel-head"><div><span>المتاجر</span><h3>كوبونات المتاجر</h3><p class="panel-note">يظهر هنا فقط ما أنشأه أصحاب المتاجر. الإدارة تستطيع الإيقاف أو الحذف مع بقاء المصدر واضحًا.</p></div><span class="tag">${fmtNumber(couponRows.length)}</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>الكود</th><th>المصدر</th><th>المتجر</th><th>الخصم</th><th>الاستخدام</th><th>الفترة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>${couponRows.length?couponRows.map(r=>`<tr><td><strong>${escapeHtml(couponTitle(r))}</strong></td><td><span class="tag">متجر</span></td><td>${escapeHtml(systemStoreName(r.store_id))}</td><td>${escapeHtml(String(offerDiscountValue(r)))}</td><td><small>مرة واحدة لكل عميل</small></td><td><small>${escapeHtml(offerDateLabel(offerStartValue(r)))} → ${escapeHtml(offerDateLabel(offerEndValue(r)))}</small></td><td><span class="status-chip ${offerStatusClass(r)}">${offerStatusLabel(r)}</span></td><td>${renderOfferActions(r,'coupon')}</td></tr>`).join(''):`<tr><td colspan="8" class="muted-cell">لا توجد كوبونات متجر مطابقة.</td></tr>`}</tbody></table></div></article>
+  <article class="panel"><div class="panel-head"><div><span>المتاجر</span><h3>عروض المتاجر</h3><p class="panel-note">يظهر هنا فقط ما أنشأه أصحاب المتاجر. العرض يبقى متكررًا حتى انتهائه ما لم يحدد له حد استخدام لكل عميل.</p></div><span class="tag">${fmtNumber(promoRows.length)}</span></div>${systemPageState.promotionTable?`<div class="table-wrap"><table class="data-table"><thead><tr><th>العرض</th><th>المصدر</th><th>المتجر</th><th>الخصم</th><th>الاستخدام</th><th>الفترة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>${promoRows.length?promoRows.map(r=>`<tr><td><strong>${escapeHtml(promoTitle(r))}</strong></td><td><span class="tag">متجر</span></td><td>${escapeHtml(systemStoreName(r.store_id))}</td><td>${escapeHtml(String(offerDiscountValue(r)))}</td><td><small>${r.per_user_limit?`حد العميل: ${escapeHtml(String(r.per_user_limit))}`:'متكرر حتى الانتهاء'}</small></td><td><small>${escapeHtml(offerDateLabel(offerStartValue(r)))} → ${escapeHtml(offerDateLabel(offerEndValue(r)))}</small></td><td><span class="status-chip ${offerStatusClass(r)}">${offerStatusLabel(r)}</span></td><td>${renderOfferActions(r,'promotion')}</td></tr>`).join(''):`<tr><td colspan="8" class="muted-cell">لا توجد عروض متجر مطابقة.</td></tr>`}</tbody></table></div>`:`<div class="muted-cell system-pad">لا يوجد جدول عروض متاح حاليًا.</div>`}</article></div>`;
 }
 function findOfferRow(kind,id){const rows=kind==='coupon'?systemPageState.coupons:systemPageState.promotions;return rows.find(r=>String(r.id)===String(id));}
 function wireSystemOffers(){
@@ -2554,12 +2609,12 @@ function wireSystemSettingsActions(){
 
 
 function auditActionLabel(v){const s=String(v||'');return ({
-  reactivate_driver:'إعادة تفعيل السائق',suspend_driver:'إيقاف السائق مؤقتًا',block_driver:'إيقاف السائق نهائيًا',
+  reactivate_driver:'إعادة تفعيل السائق',suspend_driver:'إيقاف السائق مؤقتًا',block_driver:'إيقاف السائق نهائيًا',hard_delete_driver:'حذف السائق نهائيًا',
   pause_store:'إيقاف المتجر مؤقتًا',reactivate_store:'إعادة تفعيل المتجر',archive_store:'أرشفة / إغلاق المتجر',hard_delete_store:'حذف المتجر نهائيًا',
   open_store:'فتح المتجر إداريًا',close_store:'إغلاق المتجر إداريًا',
   update_system_setting:'تعديل إعدادات النظام',schedule_maintenance:'حفظ إعدادات الصيانة',extend_maintenance:'تمديد الصيانة ساعة',end_maintenance:'إنهاء الصيانة',
   activate_offer:'تفعيل عرض أو كوبون',pause_offer:'إيقاف عرض أو كوبون',edit_offer:'تعديل عرض أو كوبون',delete_offer:'حذف عرض أو كوبون',
-  suspend_user:'إيقاف المستخدم مؤقتًا',reactivate_user:'إعادة تفعيل المستخدم',issue_pin_reset:'إصدار رمز استرجاع PIN',reject_pin_reset:'رفض استرجاع PIN'
+  suspend_user:'إيقاف المستخدم مؤقتًا',reactivate_user:'إعادة تفعيل المستخدم',hard_delete_user:'حذف المستخدم نهائيًا',issue_pin_reset:'إصدار رمز استرجاع PIN',reject_pin_reset:'رفض استرجاع PIN'
 })[s]||s.replaceAll('_',' ')||'عملية';}
 function auditEntityLabel(v){const s=String(v||'');return ({store:'متجر',driver:'سائق',user:'مستخدم',system_setting:'إعدادات النظام',coupon:'كوبون',promotion:'عرض متجر',order:'طلب'})[s]||s||'—';}
 function renderSystemAudit() {
