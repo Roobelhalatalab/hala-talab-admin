@@ -4,6 +4,9 @@
 export const APP_CONFIG = {
   supabaseUrl: 'https://czoqxshblhgwanwsrudk.supabase.co',
   supabaseAnonKey: 'sb_publishable_O9snz4RgxKSLCl6XTmoWDw_1dCjzAli',
+  // Leave empty for automatic public URL detection after deployment.
+  // Example if you later want to force a dedicated domain: 'https://menu.example.com/'
+  publicMenuBaseUrl: '',
   adminCheckMode: 'either',
   adminTable: 'admin_users',
   adminUserIdColumn: 'id',
