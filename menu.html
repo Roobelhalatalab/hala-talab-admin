@@ -8,7 +8,7 @@
   <title>المنيو الإلكتروني | هلا طلب</title>
   <link rel="icon" href="./icon-192.png" />
   <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-  <link rel="stylesheet" href="./menu.css" />
+  <link rel="stylesheet" href="./menu.css?v=47" />
 </head>
 <body>
   <div class="menu-app" id="menuApp">
@@ -28,7 +28,7 @@
       <section class="loading-card">
         <div class="spinner" aria-hidden="true"></div>
         <h1>جارٍ تحميل المنيو...</h1>
-        <p>لحظات ونجهز لك أصناف المطعم.</p>
+        <p>لحظات ونجهز لك أقسام المطعم.</p>
       </section>
     </main>
 
@@ -53,10 +53,27 @@
         <button id="qrPrintBtn" class="primary-btn" type="button">طباعة QR</button>
         <button id="qrOpenBtn" class="ghost-btn" type="button">فتح صورة QR</button>
       </div>
-      <p class="qr-note">بعد رفع Stage 42 على رابط هلا طلب، يصبح هذا الـQR نهائيًا وقابلًا للطباعة للمطعم.</p>
     </section>
   </div>
 
-  <script type="module" src="./menu.js"></script>
+  <div id="ratingModal" class="rating-modal" hidden>
+    <div class="rating-backdrop" data-close-rating></div>
+    <section class="rating-dialog" role="dialog" aria-modal="true" aria-labelledby="ratingTitle">
+      <button class="qr-close" type="button" data-close-rating aria-label="إغلاق">×</button>
+      <h2 id="ratingTitle">إضافة تقييم</h2>
+      <p id="ratingSubtitle" class="muted"></p>
+      <div class="stars-input" id="ratingStars" aria-label="اختر التقييم من 1 إلى 5"></div>
+      <label class="field-label">الاسم <span>اختياري</span>
+        <input id="ratingName" type="text" maxlength="60" placeholder="اسمك" autocomplete="name" />
+      </label>
+      <label class="field-label">التعليق <span>اختياري</span>
+        <textarea id="ratingComment" rows="4" maxlength="500" placeholder="اكتب رأيك باختصار..."></textarea>
+      </label>
+      <div id="ratingMessage"></div>
+      <button id="ratingSubmit" class="primary-btn wide" type="button">إرسال التقييم</button>
+    </section>
+  </div>
+
+  <script type="module" src="./menu.js?v=47"></script>
 </body>
 </html>
