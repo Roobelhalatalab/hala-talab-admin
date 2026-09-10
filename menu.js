@@ -439,7 +439,7 @@ async function renderMenu(store,categories,products){
   const canonicalUrl=storeMenuUrl(store);
   copyButton.onclick=async()=>{const ok=await copyText(canonicalUrl),old=copyButton.textContent;copyButton.textContent=ok?'تم النسخ':'تعذر النسخ';setTimeout(()=>copyButton.textContent=old,1400);};
   qrButton.onclick=()=>showQr(store);
-  shareButton.onclick=async()=>{try{if(navigator.share)await navigator.share({title:storeName(store),text:`منيو ${storeName(store)}`,url:canonicalUrl});else await copyText(canonicalUrl);}catch(_){}};
+  shareButton.onclick=async()=>{try{const shareText=`المنيو الإلكتروني | هلا طلب\n${storeName(store)}\n${canonicalUrl}`;if(navigator.share)await navigator.share({title:'المنيو الإلكتروني | هلا طلب',text:shareText,url:canonicalUrl});else await copyText(shareText);}catch(_){}};
   state.store=store;state.categories=categories;state.products=products;state.groups=makeGroups(store,categories,products);
   const [sr,pr]=await Promise.all([firstReadableTable(TABLES.storeRatings,{limit:1}),firstReadableTable(TABLES.productRatings,{limit:1})]);
   state.ratingTables={store:sr.ok?sr.table:null,product:pr.ok?pr.table:null};
