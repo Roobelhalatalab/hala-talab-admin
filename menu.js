@@ -131,7 +131,7 @@ const productCategoryId = (r) => text(pick(r,['category_id','product_category_id
 const productCategoryName = (r) => text(pick(r,['category_name','category_title','section_name'], nested(r,['category.name','category.name_ar','product_category.name','store_category.name','section.name'])) || '');
 const rowId = (r) => text(pick(r,['id','uuid','product_id','category_id'],'') || '');
 
-let state = { store:null, categories:[], products:[], groups:[], storeRatings:[], productRatings:[], ratingTables:{store:null,product:null}, activeView:'menu', activeCategory:null };
+let state = { store:null, categories:[], products:[], groups:[], storeRatings:[], productRatings:[], ratingTables:{store:null,product:null}, activeView:'menu', activeCategory:null, shiftContext:{shift_mode:1,shifts:[],category_assignments:[],product_assignments:[]}, activeShiftId:null };
 let ratingContext = null;
 let selectedStars = 5;
 
@@ -250,18 +250,88 @@ function heroRating(store){
   return ratingAverage(state.storeRatings);
 }
 
+function shiftMode(){ return Number(state.shiftContext?.shift_mode||1)===2?2:1; }
+function shifts(){ return Array.isArray(state.shiftContext?.shifts)?state.shiftContext.shifts:[]; }
+function activeShift(){ return shifts().find((sh)=>String(sh.id)===String(state.activeShiftId))||null; }
+function anyShiftOpen(){ return shiftMode()===2 ? shifts().some((sh)=>Boolean(sh.is_open)) : storeOpen(state.store||{}); }
+function formatShiftTime(value){
+  const raw=text(value); if(!raw)return '';
+  const m=raw.match(/^(\d{1,2}):(\d{2})/); if(!m)return raw;
+  let h=Number(m[1]); const min=m[2]; const period=h>=12?'مساءً':'صباحًا'; h%=12; if(h===0)h=12;
+  return `${h}:${min} ${period}`;
+}
+function shiftHours(sh){
+  if(!sh)return '';
+  const a=formatShiftTime(sh.start_time), b=formatShiftTime(sh.end_time);
+  return a&&b?`${a} - ${b}`:[a,b].filter(Boolean).join(' - ');
+}
+function chooseDefaultShift(){
+  if(shiftMode()!==2){state.activeShiftId=null;return;}
+  const list=[...shifts()].sort((a,b)=>Number(a.sort_order||0)-Number(b.sort_order||0));
+  const open=list.find((sh)=>Boolean(sh.is_open));
+  state.activeShiftId=String((open||list[0]||{}).id||'')||null;
+}
+function categoryShiftIds(category){
+  const direct=text(pick(category,['shift_id'],'')||'');
+  if(direct)return [direct];
+  const cid=rowId(category); if(!cid)return [];
+  return (state.shiftContext?.category_assignments||[]).filter((x)=>String(x.category_id)===String(cid)).map((x)=>String(x.shift_id));
+}
+function productShiftIds(product){
+  const pid=rowId(product); if(!pid)return [];
+  return (state.shiftContext?.product_assignments||[]).filter((x)=>String(x.product_id)===String(pid)).map((x)=>String(x.shift_id));
+}
+function allowedInActiveShift(row,type){
+  if(shiftMode()!==2 || !state.activeShiftId)return true;
+  const ids=type==='category'?categoryShiftIds(row):productShiftIds(row);
+  return !ids.length || ids.includes(String(state.activeShiftId));
+}
+async function loadShiftContext(store){
+  const sid=rowId(store); if(!sid)return {shift_mode:1,shifts:[],category_assignments:[],product_assignments:[]};
+  try{
+    const {data,error}=await supabase.rpc('customer_store_shift_context',{p_store_id:sid});
+    if(error)throw error;
+    const ctx=data&&typeof data==='object'?data:{};
+    return {
+      shift_mode:Number(ctx.shift_mode||1)===2?2:1,
+      shifts:Array.isArray(ctx.shifts)?ctx.shifts:[],
+      category_assignments:Array.isArray(ctx.category_assignments)?ctx.category_assignments:[],
+      product_assignments:Array.isArray(ctx.product_assignments)?ctx.product_assignments:[]
+    };
+  }catch(error){
+    console.warn('Shift context unavailable; using single-shift fallback:',error);
+    return {shift_mode:1,shifts:[],category_assignments:[],product_assignments:[]};
+  }
+}
+function renderShiftSwitcher(){
+  if(shiftMode()!==2 || shifts().length<2)return '';
+  const list=[...shifts()].sort((a,b)=>Number(a.sort_order||0)-Number(b.sort_order||0));
+  const active=activeShift();
+  return `<section class="shift-switcher" aria-label="شفتات المطعم">
+    <div class="shift-switcher-head"><strong>اختر الشفت</strong><span>${active?.is_open?'الشفت الحالي مفتوح الآن':'يمكنك استعراض الشفت المغلق'}</span></div>
+    <div class="shift-tabs">${list.map((sh)=>`<button class="shift-tab ${String(sh.id)===String(state.activeShiftId)?'active':''}" type="button" data-shift-id="${escapeHtml(sh.id)}"><span class="shift-tab-top"><strong>${escapeHtml(text(sh.display_name)|| (sh.code==='evening'?'المسائي':'الصباحي'))}</strong><span class="shift-status ${sh.is_open?'open':'closed'}">${sh.is_open?'مفتوح الآن':'مغلق الآن'}</span></span><span class="shift-hours">${escapeHtml(shiftHours(sh))}</span></button>`).join('')}</div>
+  </section>`;
+}
+function bindShiftSwitcher(){
+  document.querySelectorAll('[data-shift-id]').forEach((btn)=>btn.addEventListener('click',()=>{
+    state.activeShiftId=btn.dataset.shiftId||null; state.activeCategory=null;
+    state.groups=makeGroups(state.store,state.categories,state.products); renderCategoriesView();
+  }));
+}
+
 function renderHero(store) {
   const logo=storeLogo(store),address=storeAddress(store),avg=heroRating(store);
   const deliveryTime=formatDeliveryTime(storeDeliveryMinutes(store));
   const deliveryFee=formatDeliveryFee(storeDeliveryFee(store));
-  const hours=storeHours(store)||'غير محدد';
+  const selected=activeShift();
+  const hours=shiftMode()===2 ? (shiftHours(selected)||'حسب جدول الشفت') : (storeHours(store)||'غير محدد');
   const businessType=storeBusinessType(store)||'عرض التفاصيل';
   const firstFood=state.products.find((p)=>productImage(p));
   const hero=storeCover(store)||productImage(firstFood||{})||logo;
   return `<section class="client-style-hero">
     <div class="hero-cover ${hero?'':'hero-cover-empty'}" ${hero?`style="background-image:linear-gradient(180deg,rgba(0,0,0,.06),rgba(0,0,0,.28)),url('${escapeHtml(hero)}')"`:''}></div>
     <div class="store-profile-card">
-      <div class="store-identity">${logo?`<img class="store-logo" src="${escapeHtml(logo)}" alt="شعار ${escapeHtml(storeName(store))}">`:`<span class="store-logo store-logo-fallback">${escapeHtml(storeName(store).slice(0,1)||'هـ')}</span>`}<div><div class="store-title-row"><h1>${escapeHtml(storeName(store))}</h1><span class="open-pill ${storeOpen(store)?'open':'closed'}">${storeOpen(store)?'مفتوح الآن':'مغلق الآن'}</span></div><p>${escapeHtml(address||'المطعم')}</p></div></div>
+      <div class="store-identity">${logo?`<img class="store-logo" src="${escapeHtml(logo)}" alt="شعار ${escapeHtml(storeName(store))}">`:`<span class="store-logo store-logo-fallback">${escapeHtml(storeName(store).slice(0,1)||'هـ')}</span>`}<div><div class="store-title-row"><h1>${escapeHtml(storeName(store))}</h1><span class="open-pill ${anyShiftOpen()?'open':'closed'}">${anyShiftOpen()?'مفتوح الآن':'مغلق الآن'}</span></div><p>${escapeHtml(address||'المطعم')}</p></div></div>
       <div class="info-grid client-info-grid">
         <button class="info-card info-card-button" type="button" data-jump-view="ratings"><span class="info-icon">★</span><span>التقييم</span><strong>${avg.avg?avg.avg.toFixed(1):'0.0'}</strong><small>${avg.count} تقييم</small></button>
         <div class="info-card"><span class="info-icon">◷</span><span>وقت التوصيل</span><strong>${escapeHtml(deliveryTime)}</strong><small>تقريبي</small></div>
@@ -275,8 +345,8 @@ function renderHero(store) {
 }
 
 function makeGroups(store,categories,products){
-  const storeProducts=products.filter((r)=>matchesStore(r,store));
-  const storeCategories=categories.filter((r)=>matchesStore(r,store)&&categoryActive(r));
+  const storeProducts=products.filter((r)=>matchesStore(r,store)&&allowedInActiveShift(r,'product'));
+  const storeCategories=categories.filter((r)=>matchesStore(r,store)&&categoryActive(r)&&allowedInActiveShift(r,'category'));
   const sortValue=(r)=>Number(pick(r,['sort_order','display_order','order','position'],999));
   const normalized=(v)=>text(v).toLocaleLowerCase('ar').replace(/\s+/g,' ');
   const groups=[];
@@ -286,15 +356,15 @@ function makeGroups(store,categories,products){
     const cid=rowId(category), cname=normalized(categoryName(category));
     const linked=storeProducts.filter((p)=>{
       const pid=productCategoryId(p), pname=normalized(productCategoryName(p));
-      const match=(cid&&pid&&String(pid)===String(cid)) || (cname&&pname&&cname===pname);
+      // Exact category id is authoritative. Name fallback is only for legacy rows
+      // that do not yet have category_id, so duplicate names across shifts never mix.
+      const match=(cid&&pid&&String(pid)===String(cid)) || (!pid&&cname&&pname&&cname===pname);
       if(match) usedProducts.add(rowId(p)||`${productName(p)}-${productPrice(p)}`);
       return match;
     });
     if(linked.length) groups.push({category,products:linked});
   }
 
-  // Fallback for public menu: if category rows are blocked by RLS or a product stores
-  // its category as a nested object/name, rebuild the same sections from product data.
   const fallback=new Map();
   for (const p of storeProducts) {
     const keyId=productCategoryId(p), keyName=productCategoryName(p);
@@ -307,9 +377,12 @@ function makeGroups(store,categories,products){
   }
   groups.push(...fallback.values());
 
-  // De-duplicate categories that may be readable from both product_categories and store_categories.
   const unique=[]; const seen=new Set();
-  for(const g of groups){const key=rowId(g.category)?`id:${rowId(g.category)}`:`name:${normalized(categoryName(g.category))}`;if(seen.has(key))continue;seen.add(key);unique.push(g);}
+  for(const g of groups){
+    // IDs remain independent even when morning/evening categories share the same name.
+    const key=rowId(g.category)?`id:${rowId(g.category)}`:`name:${normalized(categoryName(g.category))}`;
+    if(seen.has(key))continue; seen.add(key); unique.push(g);
+  }
   return unique;
 }
 
@@ -339,13 +412,17 @@ function switchView(view){
 
 function renderCategoriesView(){
   const host=document.getElementById('viewContent'); if(!host)return;
-  const total=state.groups.length;
-  host.innerHTML=`<div class="search-wrap section-search"><span class="search-icon">⌕</span><input id="categorySearch" type="search" placeholder="ابحث داخل قائمة المطعم..." autocomplete="off"></div>
+  state.groups=makeGroups(state.store,state.categories,state.products);
+  const total=state.groups.length, sh=activeShift();
+  const shiftNote=shiftMode()===2&&sh?`<div class="shift-note ${sh.is_open?'open':'closed'}">${sh.is_open?`يعرض الآن أقسام ${escapeHtml(text(sh.display_name)||'الشفت الحالي')}.`:`${escapeHtml(text(sh.display_name)||'هذا الشفت')} مغلق الآن، ويمكنك استعراض أقسامه ووجباته.`}</div>`:'';
+  host.innerHTML=`${renderShiftSwitcher()}${shiftNote}<div class="search-wrap section-search"><span class="search-icon">⌕</span><input id="categorySearch" type="search" placeholder="ابحث داخل قائمة المطعم..." autocomplete="off"></div>
     <div class="section-head"><div><h2>أقسام القائمة</h2><p>اختر قسمًا لعرض المنتجات الموجودة داخله فقط</p></div><span>${total} قسم</span></div>
-    <div id="categoriesGrid" class="categories-grid">${total?state.groups.map(renderCategoryCard).join(''):'<div class="empty-products">لا توجد أقسام تحتوي على منتجات حاليًا.</div>'}</div>`;
+    <div id="categoriesGrid" class="categories-grid">${total?state.groups.map(renderCategoryCard).join(''):'<div class="empty-products">لا توجد أقسام تحتوي على منتجات في هذا الشفت حاليًا.</div>'}</div>`;
+  bindShiftSwitcher();
   host.querySelectorAll('[data-open-category]').forEach((card)=>card.addEventListener('click',()=>openCategory(card.dataset.openCategory)));
   document.getElementById('categorySearch')?.addEventListener('input',(e)=>filterCategories(e.target.value));
 }
+
 function renderCategoryCard(group){
   const id=rowId(group.category),img=categoryCardImage(group),search=`${categoryName(group.category)} ${group.products.map(productName).join(' ')}`.toLowerCase();
   return `<button class="category-card" type="button" data-open-category="${escapeHtml(id)}" data-category-search="${escapeHtml(search)}">
@@ -440,7 +517,7 @@ async function renderMenu(store,categories,products){
   copyButton.onclick=async()=>{const ok=await copyText(canonicalUrl),old=copyButton.textContent;copyButton.textContent=ok?'تم النسخ':'تعذر النسخ';setTimeout(()=>copyButton.textContent=old,1400);};
   qrButton.onclick=()=>showQr(store);
   shareButton.onclick=async()=>{try{const shareText=`المنيو الإلكتروني | هلا طلب\n${storeName(store)}\n${canonicalUrl}`;if(navigator.share)await navigator.share({title:'المنيو الإلكتروني | هلا طلب',text:shareText,url:canonicalUrl});else await copyText(shareText);}catch(_){}};
-  state.store=store;state.categories=categories;state.products=products;state.groups=makeGroups(store,categories,products);
+  state.store=store;state.categories=categories;state.products=products;state.shiftContext=await loadShiftContext(store);chooseDefaultShift();state.groups=makeGroups(store,categories,products);
   const [sr,pr]=await Promise.all([firstReadableTable(TABLES.storeRatings,{limit:1}),firstReadableTable(TABLES.productRatings,{limit:1})]);
   state.ratingTables={store:sr.ok?sr.table:null,product:pr.ok?pr.table:null};
   await refreshRatings(); renderMenuShell();
@@ -460,8 +537,15 @@ async function loadPublicMenu(){
   return {storesTable:storesResult.table,categoryTable:categoryResult.table,categoryTables:categoryResult.tables||[],productTable:productResult.table};
 }
 function scheduleRealtimeReload(){clearTimeout(reloadTimer);reloadTimer=setTimeout(()=>loadPublicMenu().catch(console.error),500);}
-function enableRealtime(tables){if(!requestedStore||!tables||!supabase)return;const unique=[...new Set([tables.storesTable,...(tables.categoryTables||[]),tables.categoryTable,tables.productTable].filter(Boolean))];if(!unique.length)return;try{if(realtimeChannel)supabase.removeChannel(realtimeChannel);let channel=supabase.channel(`public-menu-${requestedStore}-${Date.now()}`);unique.forEach((table)=>{channel=channel.on('postgres_changes',{event:'*',schema:'public',table},scheduleRealtimeReload);});realtimeChannel=channel.subscribe();}catch(error){console.warn('Realtime unavailable:',error);}}
-async function init(){const tables=await loadPublicMenu();enableRealtime(tables);}
+function enableRealtime(tables){if(!requestedStore||!tables||!supabase)return;const unique=[...new Set([tables.storesTable,...(tables.categoryTables||[]),tables.categoryTable,tables.productTable,'store_shifts','store_category_shifts','store_product_shifts'].filter(Boolean))];if(!unique.length)return;try{if(realtimeChannel)supabase.removeChannel(realtimeChannel);let channel=supabase.channel(`public-menu-${requestedStore}-${Date.now()}`);unique.forEach((table)=>{channel=channel.on('postgres_changes',{event:'*',schema:'public',table},scheduleRealtimeReload);});realtimeChannel=channel.subscribe();}catch(error){console.warn('Realtime unavailable:',error);}}
+let minuteRefresh=null;
+async function init(){
+  const tables=await loadPublicMenu();
+  enableRealtime(tables);
+  // Keep shift open/closed state current even if shift tables are not exposed to public Realtime.
+  if(minuteRefresh)clearInterval(minuteRefresh);
+  minuteRefresh=setInterval(()=>loadPublicMenu().catch(console.error),60000);
+}
 
 bindQrDialog();bindRatingDialog();
 init().catch((error)=>{console.error(error);renderState('حدث خطأ غير متوقع','أعد تحميل الصفحة. إذا استمرت المشكلة، راجع اتصال Supabase.');});
