@@ -492,6 +492,12 @@ function normalizeAccountRoleV39(value='customer') {
   if (['admin','superadmin'].includes(s)) return 'admin';
   return 'customer';
 }
+async function safeAdminAccountIdentityV39() {
+  try {
+    const {data,error}=await supabase.rpc('admin_account_identity_v39');
+    return error?{ok:false,rows:[],error:error.message}:{ok:true,rows:data||[]};
+  } catch(e){ return {ok:false,rows:[],error:String(e)}; }
+}
 async function safeAdminAccountIdentityV57() {
   try {
     let {data,error}=await supabase.rpc('admin_customer_identity_v57');
