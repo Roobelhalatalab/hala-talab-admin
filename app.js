@@ -492,13 +492,16 @@ function normalizeAccountRoleV39(value='customer') {
   if (['admin','superadmin'].includes(s)) return 'admin';
   return 'customer';
 }
-async function safeAdminAccountIdentityV39() {
+async function safeAdminAccountIdentityV57() {
   try {
-    const {data,error}=await supabase.rpc('admin_account_identity_v39');
-    return error?{ok:false,rows:[],error:error.message}:{ok:true,rows:data||[]};
-  } catch(e){ return {ok:false,rows:[],error:String(e)}; }
+    let {data,error}=await supabase.rpc('admin_customer_identity_v57');
+    if(!error) return {ok:true,rows:data||[],v57:true};
+    // Fallback فقط حتى لا تتوقف الصفحة إذا لم يُشغَّل SQL بعد.
+    ({data,error}=await supabase.rpc('admin_account_identity_v39'));
+    return error?{ok:false,rows:[],error:error.message}:{ok:true,rows:data||[],v57:false};
+  } catch(e){ return {ok:false,rows:[],error:String(e),v57:false}; }
 }
-function mergeAdminUserIdentityV39(baseRows, identityRows) {
+function mergeAdminUserIdentityV57(baseRows, identityRows) {
   const ids=new Map((identityRows||[]).map(r=>[String(r.user_id),r]));
   return (baseRows||[]).map(row=>{
     const x=ids.get(String(row.user_id))||{};
@@ -510,6 +513,8 @@ function mergeAdminUserIdentityV39(baseRows, identityRows) {
       phone:row.phone||x.phone||null,
       metadata_full_name:row.metadata_full_name||x.metadata_full_name||null,
       metadata_phone:row.metadata_phone||x.metadata_phone||null,
+      is_anonymous:x.is_anonymous===true,
+      is_registered_customer:x.is_registered_customer===true,
     };
   });
 }
@@ -546,14 +551,20 @@ async function safeAdminUsers() {
   try {
     const [{data,error},identityR,ordersR]=await Promise.all([
       supabase.rpc('admin_list_users'),
-      safeAdminAccountIdentityV39(),
+      safeAdminAccountIdentityV57(),
       safeRows('orders')
     ]);
     if(error) return {ok:false,rows:[],error:error.message};
-    const merged=mergeAdminUserIdentityV39(data||[],identityR.ok?identityR.rows:[]);
-    const customers=merged.filter(r=>r.effective_type==='customer');
+    const merged=mergeAdminUserIdentityV57(data||[],identityR.ok?identityR.rows:[]);
+    // Stage 57: صفحة المستخدمين = عملاء تطبيق العميل المسجلون فقط.
+    // لا نظهر جلسات التصفح/الحسابات المجهولة، ولا أصحاب المتاجر، ولا السائقين.
+    const customers=merged.filter(r=>{
+      if(r.effective_type!=='customer') return false;
+      if(r.is_anonymous===true) return false;
+      return identityR.v57 ? r.is_registered_customer===true : true;
+    });
     const fallbackMap=buildCustomerIdentityFallbackFromOrders(ordersR.ok?ordersR.rows:[]);
-    return {ok:true,rows:mergeCustomerIdentityFallback(customers,fallbackMap)};
+    return {ok:true,rows:mergeCustomerIdentityFallback(customers,fallbackMap),identity_v57:identityR.v57===true};
   }
   catch(e){ return {ok:false,rows:[],error:String(e)}; }
 }
@@ -1566,7 +1577,15 @@ function userAccessClass(v='active') {
   const s=String(v||'active');
   return s==='active'?'review-approved':s==='suspended'?'review-rejected':'review-pending';
 }
-function userDisplayName(row) { return row.profile_full_name || row.metadata_full_name || row.profile_email || row.email || row.profile_phone || row.metadata_phone || row.phone || shortId(row.user_id); }
+function userDisplayName(row) {
+  const name=row.profile_full_name || row.metadata_full_name;
+  if(name && String(name).trim()) return String(name).trim();
+  const phone=row.profile_phone || row.metadata_phone || row.phone;
+  if(phone && String(phone).trim()) return `عميل ${String(phone).trim()}`;
+  const email=row.profile_email || row.email;
+  if(email && String(email).trim() && !String(email).includes('.invalid')) return String(email).trim();
+  return 'عميل بدون اسم مسجل';
+}
 function userDisplayPhone(row) { return row.profile_phone || row.metadata_phone || row.phone || 'غير متوفر'; }
 function userSearchText(row) {
   return Object.values(row||{}).filter(v=>['string','number','boolean'].includes(typeof v)).join(' ').toLowerCase();
@@ -1832,19 +1851,67 @@ function setReportQuickRange(kind){
   const label=kind==='today'?'اليوم':kind==='week'?'آخر 7 أيام':'هذا الشهر';
   const el=document.getElementById('reportFilterStatus');if(el)el.textContent=`✓ تم اختيار: ${label}`;
 }
+function simpleReportRowsForStoreYear(storeId,year){
+  return reportsPageState.orders.filter(row=>{
+    const d=reportOrderDate(row);if(!d||d.getFullYear()!==Number(year))return false;
+    return monthlyReportStoreId(row)===String(storeId);
+  });
+}
+function simpleReportStats(rows){
+  let delivered=0,cancelled=0,incomplete=0,amount=0;
+  for(const row of rows){
+    const st=normalizeStatus(pick(row,['status','order_status'],''));
+    if(st==='delivered')delivered++;else if(st==='cancelled')cancelled++;else incomplete++;
+    amount+=reportOrderAmount(row);
+  }
+  return {total:rows.length,delivered,cancelled,incomplete,amount};
+}
+function simpleReportStores(year){
+  const map=new Map();
+  for(const [id,store] of reportsPageState.stores.entries())map.set(String(id),{id:String(id),name:pick(store,['name'],'متجر')});
+  for(const row of reportsPageState.orders){
+    const d=reportOrderDate(row);if(!d||d.getFullYear()!==Number(year))continue;
+    const id=monthlyReportStoreId(row);if(!map.has(id))map.set(id,{id,name:reportStoreName(row)});
+  }
+  return [...map.values()].map(store=>{
+    const rows=simpleReportRowsForStoreYear(store.id,year);return {...store,stats:simpleReportStats(rows)};
+  }).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ar'));
+}
+function renderSimpleReportStoreList(year){
+  const root=document.getElementById('simpleReportsRoot');if(!root)return;
+  const stores=simpleReportStores(year);
+  root.innerHTML=`<section class="simple-report-store-grid">${stores.length?stores.map(store=>`<article class="panel simple-store-report-card"><div class="simple-store-report-main"><div><span class="simple-report-kicker">تقرير متجر</span><h3>${escapeHtml(store.name||'غير معروف')}</h3><p>إجمالي طلبات ${year}</p></div><strong>${fmtNumber(store.stats.total)} <small>طلب</small></strong></div><button type="button" class="primary-btn simple-open-report" data-simple-store="${escapeHtml(store.id)}" data-simple-year="${year}">فتح التقرير</button></article>`).join(''):`<article class="panel report-empty">لا توجد متاجر لعرضها.</article>`}</section>`;
+  root.querySelectorAll('[data-simple-store]').forEach(btn=>btn.addEventListener('click',()=>renderSimpleStoreReport(btn.dataset.simpleStore,Number(btn.dataset.simpleYear))));
+}
+function renderSimpleStoreReport(storeId,year){
+  const root=document.getElementById('simpleReportsRoot');if(!root)return;
+  const store=simpleReportStores(year).find(s=>String(s.id)===String(storeId));if(!store)return;
+  const rows=simpleReportRowsForStoreYear(storeId,year);const annual=simpleReportStats(rows);
+  const months=Array.from({length:12},(_,i)=>{
+    const monthRows=rows.filter(r=>reportOrderDate(r)?.getMonth()===i);return {index:i,rows:monthRows,stats:simpleReportStats(monthRows)};
+  });
+  root.innerHTML=`<section class="simple-report-page"><div class="simple-report-back-row"><button type="button" class="secondary-btn compact" id="backToSimpleStores">← كل المتاجر</button><span class="tag">${year}</span></div><article class="panel simple-store-report-header"><span class="simple-report-kicker">تقرير المتجر</span><h2>${escapeHtml(store.name||'غير معروف')}</h2></article><article class="panel simple-annual-report"><div class="panel-head"><div><span>التقرير السنوي</span><h3>ملخص سنة ${year}</h3></div></div><div class="simple-report-metrics"><div><span>كل الطلبات</span><b>${fmtNumber(annual.total)}</b></div><div><span>المكتملة</span><b>${fmtNumber(annual.delivered)}</b></div><div><span>الملغاة</span><b>${fmtNumber(annual.cancelled)}</b></div><div><span>غير المكتملة</span><b>${fmtNumber(annual.incomplete)}</b></div></div></article><section class="simple-months-section"><div class="simple-section-title"><span>التقارير الشهرية</span><h3>الأشهر 1 إلى 12</h3></div><div class="simple-month-grid">${months.map(m=>`<article class="panel simple-month-card"><div><span>شهر ${m.index+1}</span><strong>${fmtNumber(m.stats.total)} <small>طلب</small></strong></div><button type="button" class="secondary-btn compact" data-simple-month="${m.index}" data-simple-store-month="${escapeHtml(store.id)}" data-simple-month-year="${year}">فتح</button></article>`).join('')}</div></section></section>`;
+  document.getElementById('backToSimpleStores')?.addEventListener('click',()=>renderSimpleReportStoreList(year));
+  root.querySelectorAll('[data-simple-month]').forEach(btn=>btn.addEventListener('click',()=>renderSimpleMonthReport(btn.dataset.simpleStoreMonth,Number(btn.dataset.simpleMonth),Number(btn.dataset.simpleMonthYear))));
+  root.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function renderSimpleMonthReport(storeId,monthIndex,year){
+  const root=document.getElementById('simpleReportsRoot');if(!root)return;
+  const store=simpleReportStores(year).find(s=>String(s.id)===String(storeId));if(!store)return;
+  const rows=simpleReportRowsForStoreYear(storeId,year).filter(r=>reportOrderDate(r)?.getMonth()===monthIndex).sort((a,b)=>(reportOrderDate(b)||0)-(reportOrderDate(a)||0));
+  const stats=simpleReportStats(rows);const month=monthIndex+1;
+  root.innerHTML=`<section class="simple-report-page"><div class="simple-report-back-row"><button type="button" class="secondary-btn compact" id="backToSimpleStoreReport">← تقرير المتجر</button><span class="tag">${escapeHtml(store.name||'غير معروف')} · ${year}</span></div><article class="panel simple-store-report-header"><span class="simple-report-kicker">التقرير الشهري</span><h2>شهر ${month}</h2><p>${escapeHtml(store.name||'غير معروف')}</p></article><div class="simple-report-metrics month-detail-metrics"><div><span>كل الطلبات</span><b>${fmtNumber(stats.total)}</b></div><div><span>المكتملة</span><b>${fmtNumber(stats.delivered)}</b></div><div><span>الملغاة</span><b>${fmtNumber(stats.cancelled)}</b></div><div><span>غير المكتملة</span><b>${fmtNumber(stats.incomplete)}</b></div></div><article class="panel"><div class="panel-head"><div><span>طلبات الشهر</span><h3>${fmtNumber(rows.length)} طلب</h3></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>الطلب</th><th>الحالة</th><th>القيمة</th><th>التاريخ</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td>${escapeHtml(String(pick(r,['order_number','id'],'—')))}</td><td>${escapeHtml(reportStatusLabel(normalizeStatus(pick(r,['status','order_status'],''))))}</td><td>${fmtMoney(reportOrderAmount(r))}</td><td>${reportOrderDate(r)?fmtDate(reportOrderDate(r)):'—'}</td></tr>`).join(''):'<tr><td colspan="4" class="muted-cell">لا توجد طلبات في هذا الشهر.</td></tr>'}</tbody></table></div></article></section>`;
+  document.getElementById('backToSimpleStoreReport')?.addEventListener('click',()=>renderSimpleStoreReport(storeId,year));
+  root.scrollIntoView({behavior:'smooth',block:'start'});
+}
 async function renderReportsPage(){
-  const content=document.getElementById('content');content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تجهيز التقارير...</h2><p>يتم تحليل بيانات orders وstores وpartner_profiles مباشرة من Supabase.</p></section>`;
-  const r=await loadReportsData();if(!r.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">📊</div><span class="pill">إدارة هلا طلب</span><h2>تعذر تحميل التقارير</h2><p>${escapeHtml(r.error||'خطأ غير معروف')}</p><p>تأكد من تشغيل SQL المراحل السابقة وصلاحية قراءة orders.</p></section>`;return;}
+  const content=document.getElementById('content');content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تجهيز تقارير المتاجر...</h2><p>يتم تحميل الطلبات وحساب التقرير الشهري والسنوي لكل متجر.</p></section>`;
+  const r=await loadReportsData();if(!r.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">📊</div><span class="pill">إدارة هلا طلب</span><h2>تعذر تحميل التقارير</h2><p>${escapeHtml(r.error||'خطأ غير معروف')}</p><p>تأكد من صلاحية قراءة orders.</p></section>`;return;}
   reportsPageState.orders=r.orders;reportsPageState.stores=r.stores;reportsPageState.profiles=r.profiles;reportsPageState.dateField=r.dateField;
-  const dates=r.orders.map(x=>reportOrderDate(x)).filter(Boolean).sort((a,b)=>a-b);const minDate=dates[0]||new Date();const maxDate=dates[dates.length-1]||new Date();
-  const payments=[...new Set(r.orders.map(reportPayment))].sort();const stores=[...r.stores.values()].sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ar'));
-  content.innerHTML=`<section class="dashboard-hero"><div><span class="pill">إدارة هلا طلب</span><h2>التقارير والتحليلات</h2><p>اختر الفترة والمتجر والحالة ثم احفظ التقرير PDF أو صدّره CSV. كل خيارات التصدير تعتمد على النتائج المفلترة فقط.</p><p id="reportPrintSummary" class="report-print-summary" hidden></p></div><div class="hero-actions"><button id="exportPdfReport" class="primary-btn">📄 حفظ PDF</button><button id="exportReport" class="secondary-btn">⬇ CSV</button><button id="printReport" class="secondary-btn">🖨 طباعة</button></div></section>
-    <section class="report-filters panel"><div class="report-quick-ranges"><span>فترة سريعة:</span><button type="button" class="secondary-btn compact" data-report-range="today">اليوم</button><button type="button" class="secondary-btn compact" data-report-range="week">آخر 7 أيام</button><button type="button" class="secondary-btn compact" data-report-range="month">هذا الشهر</button></div><div class="report-filter-grid"><label>من<input id="reportFrom" type="date" value="${dateInputValue(minDate)}"></label><label>إلى<input id="reportTo" type="date" value="${dateInputValue(maxDate)}"></label><label>الحالة<select id="reportStatus"><option value="all">كل الحالات</option>${ORDER_STATUS_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select></label><label>طريقة الدفع<select id="reportPayment"><option value="all">كل طرق الدفع</option>${payments.map(p=>`<option value="${escapeHtml(p)}">${escapeHtml(reportPaymentLabel(p))}</option>`).join('')}</select></label><label>المتجر<select id="reportStore"><option value="all">كل المتاجر</option>${stores.map(s=>`<option value="${escapeHtml(String(s.id))}">${escapeHtml(s.name||shortId(s.id))}</option>`).join('')}</select></label><label>المنطقة / العنوان<input id="reportArea" type="search" placeholder="ابحث بجزء من عنوان التوصيل"></label></div><div class="report-filter-actions"><button id="applyReports" class="primary-btn compact">تطبيق الفلاتر</button><button id="resetReports" class="secondary-btn compact">إعادة الضبط</button><span id="reportFilterStatus" class="tag" aria-live="polite"></span></div><div class="report-results-summary"><span>النتائج</span><strong id="reportFilteredCount">0 طلب</strong></div></section><div id="reportsResults"></div>`;
-  const setFilterStatus=(msg)=>{const el=document.getElementById('reportFilterStatus');if(!el)return;el.textContent=msg;clearTimeout(window.__reportFilterTimer);window.__reportFilterTimer=setTimeout(()=>{if(el)el.textContent='';},2600);};
-  const applyFilters=()=>{renderReportsAnalytics();setFilterStatus('✓ تم تطبيق الفلاتر');document.getElementById('reportsResults')?.scrollIntoView({behavior:'smooth',block:'start'});};
-  document.getElementById('applyReports')?.addEventListener('click',applyFilters);
-  document.getElementById('resetReports')?.addEventListener('click',()=>{document.getElementById('reportFrom').value=dateInputValue(minDate);document.getElementById('reportTo').value=dateInputValue(maxDate);document.getElementById('reportStatus').value='all';document.getElementById('reportPayment').value='all';document.getElementById('reportStore').value='all';document.getElementById('reportArea').value='';renderReportsAnalytics();setFilterStatus('↺ تمت إعادة الضبط');});
-  document.getElementById('exportReport')?.addEventListener('click',exportReportsCsv);document.getElementById('exportPdfReport')?.addEventListener('click',exportReportsPdf);document.getElementById('printReport')?.addEventListener('click',()=>window.print());document.querySelectorAll('[data-report-range]').forEach(btn=>btn.addEventListener('click',()=>setReportQuickRange(btn.dataset.reportRange)));renderReportsAnalytics();
+  const years=monthlyReportYears(r.orders);const selected=years[0]||new Date().getFullYear();
+  content.innerHTML=`<section class="dashboard-hero simple-reports-hero"><div><span class="pill">إدارة هلا طلب</span><h2>تقارير المتاجر</h2><p>كل متجر له تقرير مستقل. افتح المتجر لمشاهدة التقرير السنوي ثم افتح أي شهر لمشاهدة طلباته.</p></div><label class="simple-report-year">السنة<select id="simpleReportYear">${years.map(y=>`<option value="${y}" ${y===selected?'selected':''}>${y}</option>`).join('')}</select></label></section><div id="simpleReportsRoot"></div>`;
+  document.getElementById('simpleReportYear')?.addEventListener('change',e=>renderSimpleReportStoreList(Number(e.target.value)));
+  renderSimpleReportStoreList(selected);
 }
 
 
