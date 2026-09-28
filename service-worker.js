@@ -1,13 +1,13 @@
 importScripts("https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js");
 
-const CACHE_NAME = 'hala-talab-admin-stage-39-account-role-name-fix';
+const CACHE_NAME = 'hala-talab-admin-stage-55-monthly-store-reports';
 const BASE = '/hala-talab-admin/';
 const APP_SHELL = [
   BASE,
   BASE + 'index.html',
   BASE + 'manifest.webmanifest',
-  BASE + 'styles.css?v=39.3',
-  BASE + 'app.js?v=39.3',
+  BASE + 'styles.css?v=54.1',
+  BASE + 'app.js?v=54.1',
   BASE + 'supabase.js',
   BASE + 'config.js',
   BASE + 'icon-192.png',

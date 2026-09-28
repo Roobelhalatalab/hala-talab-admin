@@ -25,7 +25,7 @@ apple-touch-icon.png
 .nojekyll
 .gitignore
 
-ملفات إعداد Stage 38 التي لا تحتاجها الواجهة أثناء التشغيل:
+ملفات إعداد Stage 38 وStage 39 التي لا تحتاجها الواجهة أثناء التشغيل:
 _setup/STAGE_38_COUPON_OFFER_SEPARATION.sql
 README_AR.txt
 README_STAGE_38_AR.txt

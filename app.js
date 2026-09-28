@@ -513,12 +513,47 @@ function mergeAdminUserIdentityV39(baseRows, identityRows) {
     };
   });
 }
+function buildCustomerIdentityFallbackFromOrders(rows=[]) {
+  const out=new Map();
+  for (const o of rows||[]) {
+    const id=pick(o,['customer_id','customer_user_id','user_id','customer_uuid'],null);
+    if(!id) continue;
+    const key=String(id);
+    const current=out.get(key)||{};
+    const name=pick(o,['customer_name','customer_full_name','user_name','full_name','name'],null);
+    const phone=pick(o,['customer_phone','phone','customer_mobile','mobile'],null);
+    const email=pick(o,['customer_email','email'],null);
+    out.set(key,{
+      profile_full_name: current.profile_full_name || (name?String(name).trim():null),
+      profile_phone: current.profile_phone || (phone?String(phone).trim():null),
+      profile_email: current.profile_email || (email?String(email).trim():null),
+    });
+  }
+  return out;
+}
+function mergeCustomerIdentityFallback(rows, fallbackMap) {
+  return (rows||[]).map(row=>{
+    const x=fallbackMap?.get(String(row.user_id))||{};
+    return {
+      ...row,
+      profile_full_name: row.profile_full_name || x.profile_full_name || null,
+      profile_phone: row.profile_phone || x.profile_phone || null,
+      email: row.email || x.profile_email || null,
+    };
+  });
+}
 async function safeAdminUsers() {
   try {
-    const [{data,error},identityR]=await Promise.all([supabase.rpc('admin_list_users'),safeAdminAccountIdentityV39()]);
+    const [{data,error},identityR,ordersR]=await Promise.all([
+      supabase.rpc('admin_list_users'),
+      safeAdminAccountIdentityV39(),
+      safeRows('orders')
+    ]);
     if(error) return {ok:false,rows:[],error:error.message};
     const merged=mergeAdminUserIdentityV39(data||[],identityR.ok?identityR.rows:[]);
-    return {ok:true,rows:merged.filter(r=>r.effective_type==='customer')};
+    const customers=merged.filter(r=>r.effective_type==='customer');
+    const fallbackMap=buildCustomerIdentityFallbackFromOrders(ordersR.ok?ordersR.rows:[]);
+    return {ok:true,rows:mergeCustomerIdentityFallback(customers,fallbackMap)};
   }
   catch(e){ return {ok:false,rows:[],error:String(e)}; }
 }
@@ -771,7 +806,7 @@ async function renderStageTwoDashboard() {
   renderLoading();
   const d=await loadPolishDashboardData();
   const rows=d.recent.rows||[];
-  const recentHtml=rows.length?rows.slice(0,6).map(row=>{const no=pick(row,['order_number','number','id']);const customer=pick(row,['customer_name','customer_full_name','user_name','name'],'عميل');const store=pick(row,['store_name','restaurant_name','partner_name'],'—');const status=statusLabel(pick(row,['status','order_status'],'—'));const amount=numericPick(row,['total_amount','grand_total','total','amount','final_total','order_total']);return `<tr><td>${escapeHtml(String(no).slice(0,18))}</td><td>${escapeHtml(customer)}</td><td>${escapeHtml(store)}</td><td><span class="status-pill">${escapeHtml(status)}</span></td><td>${amount?fmtMoney(amount):'—'}</td><td>${fmtDate(d.dateField?row[d.dateField]:orderDateValue(row))}</td></tr>`;}).join(''):`<tr><td colspan="6" class="muted-cell">لا توجد طلبات ظاهرة حاليًا.</td></tr>`;
+  const recentHtml=rows.length?rows.slice(0,6).map(row=>{const no=pick(row,['order_number','number','id']);const customer=pick(row,['customer_name','customer_full_name','user_name','name'],'عميل');const store=pick(row,['store_name','restaurant_name','partner_name'],'—');const status=statusLabel(pick(row,['status','order_status'],'—'));const amount=numericPick(row,['total_amount','grand_total','total','amount','final_total','order_total']);return `<tr><td>${escapeHtml(String(no).slice(0,18))}</td><td>${escapeHtml(customer)}</td><td>${escapeHtml(store)}</td><td><span class="status-pill">${escapeHtml(status)}</span></td><td>${amount?fmtMoney(amount):'—'}</td><td>${fmtDate(d.dateField?row[d.dateField]:orderDateValue(row))}</td></tr>`;}).join(''):`<tr><td colspan="7" class="muted-cell">لا توجد طلبات ظاهرة حاليًا.</td></tr>`;
   document.getElementById('content').innerHTML=`
     <section class="dashboard-hero polish-hero"><div><span class="pill">إدارة هلا طلب</span><h2>ملخص اليوم</h2><p>المهم أولًا: شنو صار اليوم وشنو يحتاج تدخل منك الآن.</p></div><button id="refreshDashboard" class="secondary-btn">↻ تحديث</button></section>
     ${mobileAdminQuickActions(d)}
@@ -1058,12 +1093,47 @@ function storeLifecycleLabel(row){const v=String(controlForStore(row).lifecycle_
 function storeName(row) { return pick(row,['name','store_name','restaurant_name'],'متجر بدون اسم'); }
 function storeCategory(row) { return pick(row,['category','type','store_type','business_type'],'غير محدد'); }
 function storeAddress(row) { return pick(row,['address','store_address','location_text','delivery_address'],'غير متوفر'); }
+function storeDisplayOrder(row) {
+  const raw=row?.display_order;
+  const n=Number(raw);
+  return Number.isInteger(n) && n>0 ? n : null;
+}
+function sortStoresByDisplayOrder(rows=[]) {
+  return [...(rows||[])].sort((a,b)=>{
+    const ao=storeDisplayOrder(a), bo=storeDisplayOrder(b);
+    if(ao!=null && bo!=null && ao!==bo) return ao-bo;
+    if(ao!=null && bo==null) return -1;
+    if(ao==null && bo!=null) return 1;
+    return String(storeName(a)||'').localeCompare(String(storeName(b)||''),'ar');
+  });
+}
+async function saveStoreDisplayOrder(row) {
+  const input=document.getElementById('storeDisplayOrderInput');
+  const box=document.getElementById('storeOrderMessage');
+  const btn=document.getElementById('saveStoreDisplayOrder');
+  if(!input||!box||!btn) return;
+  const raw=String(input.value||'').trim();
+  const value=raw===''?null:Number(raw);
+  if(value!==null && (!Number.isInteger(value)||value<1||value>9999)){
+    box.innerHTML='<div class="alert warning">أدخل رقم ترتيب صحيح من 1 إلى 9999، أو اتركه فارغًا لإلغاء الأولوية.</div>';
+    return;
+  }
+  btn.disabled=true; btn.textContent='جارٍ الحفظ...'; box.innerHTML='';
+  const {data,error}=await supabase.from('stores').update({display_order:value}).eq('id',row.id).select().maybeSingle();
+  btn.disabled=false; btn.textContent='حفظ ترتيب الظهور';
+  if(error){box.innerHTML=`<div class="alert error">تعذر حفظ ترتيب الظهور: ${escapeHtml(error.message)}. شغّل ملف STAGE_54_STORE_DISPLAY_ORDER.sql مرة واحدة.</div>`;return;}
+  row.display_order=data?.display_order ?? value;
+  storesPageState.rows=sortStoresByDisplayOrder(storesPageState.rows);
+  await systemAudit('update_store_display_order','store',row.id,{display_order:row.display_order});
+  box.innerHTML='<div class="alert success">تم حفظ ترتيب الظهور. الرقم الأصغر يظهر أولًا داخل قسمه في تطبيق العميل بعد اعتماد الترتيب هناك.</div>';
+  applyStoresFilters();
+}
 
 async function fetchStoresAdmin() {
   try {
     const { data, error } = await supabase.from('stores').select('*').limit(5000);
     if (error) return {ok:false,rows:[],error:error.message};
-    return {ok:true,rows:data||[]};
+    return {ok:true,rows:sortStoresByDisplayOrder(data||[])};
   } catch(e) { return {ok:false,rows:[],error:String(e)}; }
 }
 async function loadStoreAdminLookups() {
@@ -1100,6 +1170,7 @@ function renderStoreRows(rows) {
       <td><button class="link-btn store-open primary-entity" data-id="${escapeHtml(row.id)}">${escapeHtml(storeName(row))}</button><small class="table-subline">${escapeHtml(storeCategory(row))}</small></td>
       <td>${escapeHtml(ownerNameForStore(row))}</td>
       <td>${escapeHtml(String(pick(row,['phone'],'—')))}</td>
+      <td>${storeDisplayOrder(row)??'—'}</td>
       <td><span class="operational-pill ${storeOperationalClass(row)}">${escapeHtml(storeOperationalStatus(row))}</span></td>
       <td><span class="review-pill ${storeReviewClass(review.review_status)}">${escapeHtml(storeReviewLabel(review.review_status))}</span></td>
       <td><button class="secondary-btn compact store-open" data-id="${escapeHtml(row.id)}">التفاصيل والمراجعة</button></td>
@@ -1109,7 +1180,7 @@ function renderStoreRows(rows) {
 function applyStoresFilters() {
   const q=(document.getElementById('storesSearch')?.value||'').trim().toLowerCase();
   const reviewStatus=document.getElementById('storesReviewFilter')?.value||'all';
-  let rows=[...storesPageState.rows];
+  let rows=sortStoresByDisplayOrder(storesPageState.rows);
   if(q) rows=rows.filter(r=>storeSearchText(r).includes(q));
   if(reviewStatus!=='all') rows=rows.filter(r=>String(reviewForStore(r).review_status||'pending')===reviewStatus);
   storesPageState.filtered=rows;
@@ -1238,10 +1309,18 @@ function openStoreDetails(row) {
       ${detailItem('هاتف صاحب الحساب',ownerPhoneForStore(row))}
       ${detailItem('البريد',pick(owner,['email'],'غير متوفر'))}
       ${detailItem('النوع / التصنيف',storeCategory(row))}
+      ${detailItem('ترتيب الظهور',storeDisplayOrder(row)??'غير محدد')}
       ${detailItem('الحالة التشغيلية',`<span class=\"operational-pill ${storeOperationalClass(row)}\">${escapeHtml(storeOperationalStatus(row))}</span>`,true)}
       ${detailItem('مفعّل',storeBooleanLabel(pick(row,['is_active','active','enabled'],null)))}
       ${detailItem('العنوان',storeAddress(row))}
       ${detailItem('الوصف',pick(row,['description','bio','about'],'غير متوفر'))}
+    </div>
+    <div class="review-editor">
+      <div class="panel-head"><div><span>تطبيق العميل</span><h3>ترتيب ظهور المتجر</h3></div></div>
+      <p class="panel-note">أدخل رقم الأولوية. الرقم 1 يظهر قبل 2، والمتاجر التي بدون رقم تظهر بعد المتاجر المرتبة. يستخدم نفس الحقل داخل قسم المطاعم أو قسم المتاجر.</p>
+      <label>ترتيب الظهور<input id="storeDisplayOrderInput" type="number" min="1" max="9999" step="1" value="${storeDisplayOrder(row)??''}" placeholder="مثال: 1" /></label>
+      <button class="primary-btn compact" id="saveStoreDisplayOrder">حفظ ترتيب الظهور</button>
+      <div id="storeOrderMessage"></div>
     </div>
     <div class="store-operational-actions">
       <div class="panel-head"><div><span>إدارة التشغيل</span><h3>إجراءات المتجر</h3></div></div>
@@ -1278,6 +1357,7 @@ function openStoreDetails(row) {
   document.body.appendChild(overlay);
   const close=()=>overlay.remove(); document.getElementById('closeStoreModal').addEventListener('click',close); overlay.addEventListener('click',e=>{if(e.target===overlay)close();});
   document.getElementById('saveStoreReview').addEventListener('click',()=>saveStoreReview(row));
+  document.getElementById('saveStoreDisplayOrder')?.addEventListener('click',()=>saveStoreDisplayOrder(row));
   wireStoreOperationalActions(row);
 }
 async function saveStoreReview(row) {
@@ -1297,7 +1377,7 @@ async function renderStoresPage() {
   content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل المتاجر...</h2><p>يتم قراءة جدول stores ومراجعات الإدارة من Supabase.</p></section>`;
   const [storesR,lookups]=await Promise.all([fetchStoresAdmin(),loadStoreAdminLookups()]);
   if(!storesR.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">🏪</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة المتاجر</h2><p>${escapeHtml(storesR.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage4_rls.sql</b> ثم أعد المحاولة.</p></section>`;return;}
-  storesPageState={rows:storesR.rows,filtered:storesR.rows,reviews:lookups.reviews,owners:lookups.owners,controls:lookups.controls||new Map(),selected:null};
+  storesPageState={rows:sortStoresByDisplayOrder(storesR.rows),filtered:sortStoresByDisplayOrder(storesR.rows),reviews:lookups.reviews,owners:lookups.owners,controls:lookups.controls||new Map(),selected:null};
   const counts={pending:0,approved:0,rejected:0,suspended:0}; storesR.rows.forEach(r=>{const s=reviewForStore(r).review_status||'pending'; if(counts[s]!==undefined)counts[s]++;});
   content.innerHTML=`
     <section class="dashboard-hero"><div><span class="pill">إدارة هلا طلب</span><h2>إدارة المتاجر / المطاعم</h2><p>تابع المتاجر، حالتها التشغيلية وقرارات المراجعة من مكان واحد.</p></div><button id="refreshStores" class="secondary-btn">↻ تحديث المتاجر</button></section>
@@ -1312,7 +1392,7 @@ async function renderStoresPage() {
       <select id="storesReviewFilter"><option value="all">كل حالات المراجعة</option>${STORE_REVIEW_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select>
       <span id="storesResultCount" class="tag">${fmtNumber(storesR.rows.length)} متجر</span>
     </section>
-    <article class="panel stores-panel"><div class="table-wrap"><table class="data-table stores-table"><thead><tr><th>المتجر</th><th>صاحب الحساب</th><th>الهاتف</th><th>التشغيل</th><th>المراجعة</th><th></th></tr></thead><tbody id="storesTableBody">${renderStoreRows(storesR.rows)}</tbody></table></div></article>`;
+    <article class="panel stores-panel"><div class="table-wrap"><table class="data-table stores-table"><thead><tr><th>المتجر</th><th>صاحب الحساب</th><th>الهاتف</th><th>ترتيب الظهور</th><th>التشغيل</th><th>المراجعة</th><th></th></tr></thead><tbody id="storesTableBody">${renderStoreRows(sortStoresByDisplayOrder(storesR.rows))}</tbody></table></div></article>`;
   document.getElementById('refreshStores')?.addEventListener('click',renderStoresPage);
   document.getElementById('storesSearch')?.addEventListener('input',applyStoresFilters);
   document.getElementById('storesReviewFilter')?.addEventListener('change',applyStoresFilters);
@@ -1486,7 +1566,7 @@ function userAccessClass(v='active') {
   const s=String(v||'active');
   return s==='active'?'review-approved':s==='suspended'?'review-rejected':'review-pending';
 }
-function userDisplayName(row) { return row.profile_full_name || row.metadata_full_name || row.email || row.phone || shortId(row.user_id); }
+function userDisplayName(row) { return row.profile_full_name || row.metadata_full_name || row.profile_email || row.email || row.profile_phone || row.metadata_phone || row.phone || shortId(row.user_id); }
 function userDisplayPhone(row) { return row.profile_phone || row.metadata_phone || row.phone || 'غير متوفر'; }
 function userSearchText(row) {
   return Object.values(row||{}).filter(v=>['string','number','boolean'].includes(typeof v)).join(' ').toLowerCase();
@@ -1613,6 +1693,42 @@ function reportBarRows(items,{money=false,labelFn=null,classFn=null,maxItems=8}=
   return sliced.map(([label,val])=>{const num=money?Number(val.amount||0):Number(val||0);const width=Math.max(3,Math.round((num/max)*100));const shown=money?fmtMoney(num):fmtNumber(num);const cls=classFn?classFn(label):'';return `<div class="report-bar-row"><div class="report-bar-label"><span>${escapeHtml(labelFn?labelFn(label):label)}</span><b>${shown}</b></div><div class="report-bar-track"><i class="${cls}" style="width:${width}%"></i></div></div>`}).join('');
 }
 function reportStatusLabel(v){return statusLabel(v)||v||'غير محدد';}
+function monthlyReportYears(rows){
+  const years=[...new Set(rows.map(reportOrderDate).filter(Boolean).map(d=>d.getFullYear()))].sort((a,b)=>b-a);
+  const current=new Date().getFullYear();
+  if(!years.includes(current)) years.unshift(current);
+  return years;
+}
+function monthlyReportStoreId(row){ return String(row.store_id||row.restaurant_id||row.partner_id||'unknown'); }
+function monthlyReportStoreRows(year){
+  const byStore=new Map();
+  const ensure=(id,name)=>{if(!byStore.has(id))byStore.set(id,{id,name,months:Array.from({length:12},()=>({total:0,delivered:0,cancelled:0,incomplete:0,rows:[]}))});return byStore.get(id);};
+  for(const [id,store] of reportsPageState.stores.entries()) ensure(String(id),pick(store,['name'],'متجر'));
+  for(const row of reportsPageState.orders){
+    const d=reportOrderDate(row);if(!d||d.getFullYear()!==Number(year))continue;
+    const id=monthlyReportStoreId(row);const store=ensure(id,reportStoreName(row));const cell=store.months[d.getMonth()];
+    const st=normalizeStatus(pick(row,['status','order_status'],''));cell.total++;cell.rows.push(row);
+    if(st==='delivered')cell.delivered++;else if(st==='cancelled')cell.cancelled++;else cell.incomplete++;
+  }
+  return [...byStore.values()].filter(x=>x.months.some(m=>m.total>0)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ar'));
+}
+function renderMonthlyStoreReports(){
+  const host=document.getElementById('monthlyStoreReports');if(!host)return;
+  const years=monthlyReportYears(reportsPageState.orders);const selected=Number(document.getElementById('monthlyReportYear')?.value||years[0]||new Date().getFullYear());
+  const stores=monthlyReportStoreRows(selected);
+  const totals=Array.from({length:12},(_,m)=>stores.reduce((sum,s)=>sum+s.months[m].total,0));
+  const rowsHtml=stores.length?stores.map(s=>`<tr><th class="monthly-store-name">${escapeHtml(s.name||'غير معروف')}</th>${s.months.map((m,i)=>`<td><button type="button" class="monthly-count-btn ${m.total?'has-orders':''}" data-month-store="${escapeHtml(s.id)}" data-month-index="${i}" data-month-year="${selected}" title="فتح تفاصيل الشهر ${i+1}">${fmtNumber(m.total)}</button></td>`).join('')}<td class="monthly-year-total"><b>${fmtNumber(s.months.reduce((a,m)=>a+m.total,0))}</b></td></tr>`).join(''):`<tr><td colspan="14" class="muted-cell">لا توجد طلبات مسجلة لهذه السنة.</td></tr>`;
+  host.innerHTML=`<article class="panel monthly-stores-report"><div class="panel-head monthly-report-head"><div><span>متابعة شهرية</span><h3>طلبات كل متجر حسب الشهر</h3><p>كل شهر مستقل عن الآخر. الأرقام محسوبة من تاريخ الطلب الحقيقي ولا يتم حذف بيانات الأشهر السابقة.</p></div><label class="monthly-year-picker">السنة<select id="monthlyReportYear">${years.map(y=>`<option value="${y}" ${y===selected?'selected':''}>${y}</option>`).join('')}</select></label></div><div class="monthly-table-wrap"><table class="data-table monthly-report-table"><thead><tr><th>المتجر</th>${Array.from({length:12},(_,i)=>`<th>شهر ${i+1}</th>`).join('')}<th>المجموع</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><th>كل المتاجر</th>${totals.map(v=>`<th>${fmtNumber(v)}</th>`).join('')}<th>${fmtNumber(totals.reduce((a,b)=>a+b,0))}</th></tr></tfoot></table></div><section id="monthlyReportDetail" class="monthly-report-detail" hidden></section></article>`;
+  document.getElementById('monthlyReportYear')?.addEventListener('change',renderMonthlyStoreReports);
+  host.querySelectorAll('[data-month-store]').forEach(btn=>btn.addEventListener('click',()=>showMonthlyStoreReportDetail(btn.dataset.monthStore,Number(btn.dataset.monthIndex),Number(btn.dataset.monthYear))));
+}
+function showMonthlyStoreReportDetail(storeId,monthIndex,year){
+  const host=document.getElementById('monthlyReportDetail');if(!host)return;
+  const store=monthlyReportStoreRows(year).find(s=>String(s.id)===String(storeId));if(!store)return;
+  const m=store.months[monthIndex];const month=monthIndex+1;
+  host.hidden=false;host.innerHTML=`<div class="panel-head"><div><span>${escapeHtml(store.name)} · ${year}</span><h3>تفاصيل شهر ${month}</h3></div><button type="button" class="secondary-btn compact" id="closeMonthlyReportDetail">إغلاق</button></div><div class="monthly-detail-metrics"><div><span>كل الطلبات</span><b>${fmtNumber(m.total)}</b></div><div><span>المكتملة</span><b>${fmtNumber(m.delivered)}</b></div><div><span>الملغاة</span><b>${fmtNumber(m.cancelled)}</b></div><div><span>غير المكتملة</span><b>${fmtNumber(m.incomplete)}</b></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>الطلب</th><th>الحالة</th><th>القيمة</th><th>التاريخ</th></tr></thead><tbody>${m.rows.length?m.rows.slice().sort((a,b)=>(reportOrderDate(b)||0)-(reportOrderDate(a)||0)).map(r=>`<tr><td>${escapeHtml(String(pick(r,['order_number','id'],'—')))}</td><td>${escapeHtml(reportStatusLabel(normalizeStatus(pick(r,['status','order_status'],''))))}</td><td>${fmtMoney(reportOrderAmount(r))}</td><td>${reportOrderDate(r)?fmtDate(reportOrderDate(r)):'—'}</td></tr>`).join(''):'<tr><td colspan="4" class="muted-cell">لا توجد طلبات في هذا الشهر.</td></tr>'}</tbody></table></div>`;
+  document.getElementById('closeMonthlyReportDetail')?.addEventListener('click',()=>host.hidden=true);host.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
 function performanceMetrics(rows){
   const delivered=rows.filter(r=>normalizeStatus(pick(r,['status','order_status'],''))==='delivered');
   const cancelled=rows.filter(r=>normalizeStatus(pick(r,['status','order_status'],''))==='cancelled');
@@ -1654,6 +1770,7 @@ function renderReportsAnalytics(){
   const stores=aggregateAmount(rows,r=>reportStoreName(r));const drivers=aggregateCount(rows,r=>reportDriverName(r)).filter(([k])=>k!=='غير مسند');const areas=aggregateCount(rows,r=>reportArea(r));
   const perf=performanceMetrics(rows);
   content.innerHTML=`
+    <section id="monthlyStoreReports"></section>
     <section class="report-metrics-grid">
       ${actionMetricCard('الطلبات',fmtNumber(rows.length),'ضمن الفلاتر الحالية','📦','reports','orders')}
       ${actionMetricCard('إجمالي القيمة',fmtMoney(revenue),'مجموع إجمالي الطلبات','💰','reports','revenue')}
@@ -1672,6 +1789,7 @@ function renderReportsAnalytics(){
       <article class="panel report-panel"><div class="panel-head"><div><span>المناطق</span><h3>الطلبات حسب عنوان التوصيل</h3></div></div><div class="report-bars">${reportBarRows(areas,{maxItems:8})}</div></article>
     </section><section id="reportMetricDetail" class="panel report-metric-detail" hidden></section>`;
   const count=document.getElementById('reportFilteredCount');if(count)count.textContent=`${fmtNumber(rows.length)} طلب`;
+  renderMonthlyStoreReports();
   document.querySelectorAll('[data-metric-action="reports"]').forEach(b=>b.addEventListener('click',()=>showReportMetricDetail(b.dataset.metricValue,rows,revenue,avg)));
 }
 function showReportMetricDetail(type,rows,revenue,avg){const host=document.getElementById('reportMetricDetail');if(!host)return;let title='تفاصيل';let html='';if(type==='orders'){title='الطلبات ضمن الفلاتر';html=`<div class="table-wrap"><table class="data-table"><thead><tr><th>الطلب</th><th>المتجر</th><th>الحالة</th><th>القيمة</th><th>التاريخ</th></tr></thead><tbody>${rows.slice(0,50).map(r=>`<tr><td>${escapeHtml(String(pick(r,['order_number','id'],'—')))}</td><td>${escapeHtml(reportStoreName(r))}</td><td>${escapeHtml(reportStatusLabel(normalizeStatus(pick(r,['status','order_status'],''))))}</td><td>${fmtMoney(reportOrderAmount(r))}</td><td>${reportOrderDate(r)?fmtDate(reportOrderDate(r)):'—'}</td></tr>`).join('')||'<tr><td colspan="5" class="muted-cell">لا توجد طلبات.</td></tr>'}</tbody></table></div>`;}else if(type==='revenue'){title='تفصيل إجمالي القيمة';html=`<p>إجمالي القيمة هو مجموع قيمة <b>${fmtNumber(rows.length)}</b> طلب ضمن الفلاتر الحالية.</p><div class="big-detail-value">${fmtMoney(revenue)}</div>`;}else if(type==='average'){title='كيف حُسب متوسط الطلب؟';html=`<p>متوسط الطلب = إجمالي القيمة ÷ عدد الطلبات.</p><div class="calculation-box">${fmtMoney(revenue)} ÷ ${fmtNumber(rows.length)} = <b>${fmtMoney(avg)}</b></div>`;}else if(type==='stores'){title='المتاجر النشطة';const a=aggregateCount(rows,r=>reportStoreName(r));html=`<div class="rank-list">${a.map(([n,v])=>`<div><span>${escapeHtml(n)}</span><strong>${fmtNumber(v)} طلب</strong></div>`).join('')||'<div class="report-empty">لا توجد بيانات.</div>'}</div>`;}else if(type==='drivers'){title='السائقون النشطون';const a=aggregateCount(rows,r=>reportDriverName(r)).filter(([n])=>n!=='غير مسند');html=`<div class="rank-list">${a.map(([n,v])=>`<div><span>${escapeHtml(n)}</span><strong>${fmtNumber(v)} طلب</strong></div>`).join('')||'<div class="report-empty">لا توجد بيانات.</div>'}</div>`;}host.hidden=false;host.innerHTML=`<div class="panel-head"><div><span>تفاصيل المؤشر</span><h3>${title}</h3></div><button type="button" class="secondary-btn compact" id="closeReportMetricDetail">إغلاق</button></div>${html}`;document.getElementById('closeReportMetricDetail')?.addEventListener('click',()=>host.hidden=true);host.scrollIntoView({behavior:'smooth',block:'start'});}
