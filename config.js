@@ -13,6 +13,9 @@ export const APP_CONFIG = {
   adminRoleColumn: 'role',
   adminRoleValue: 'admin',
 
+  // Realtime monitor secrets are intentionally NOT stored here.
+  // They live only in the admin-realtime-monitor Edge Function environment.
+
   // Stage 2 tries the real tables in this order and gracefully skips missing tables.
   dashboardTables: {
     orders: ['orders'],

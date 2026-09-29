@@ -4,6 +4,7 @@ import { APP_CONFIG } from './config.js';
 
 const app = document.getElementById('app');
 const ADMIN_PUSH_FUNCTION_URL = `${APP_CONFIG.supabaseUrl}/functions/v1/admin-onesignal-push`;
+const REALTIME_MONITOR_FUNCTION_URL = `${APP_CONFIG.supabaseUrl}/functions/v1/admin-realtime-monitor`;
 
 async function callAdminPushDeviceApi(action, subscriptionId, extra = {}) {
   const { data } = await supabase.auth.getSession();
@@ -64,7 +65,7 @@ async function deactivateCurrentPushDevice() {
 
 const icons = {
   dashboard: '▦', orders: '🧾', stores: '🏪', drivers: '🚚', users: '👥',
-  reports: '📊', system: '⚙', settings: '🛡️', logout: '↪', menu: '☰', bell: '🔔'
+  reports: '📊', monitor: '📡', system: '⚙', settings: '🛡️', logout: '↪', menu: '☰', bell: '🔔'
 };
 
 const navItems = [
@@ -74,6 +75,7 @@ const navItems = [
   ['drivers', 'السائقون'],
   ['users', 'المستخدمون'],
   ['reports', 'التقارير والتحليلات'],
+  ['monitor', 'مراقبة الاتصالات'],
   ['system', 'إدارة النظام'],
   ['settings', 'الأمان والصلاحيات'],
 ];
@@ -3019,10 +3021,126 @@ async function renderSecurityPage(forcedTab='overview'){
   }catch(e){content.innerHTML=`<section class="empty-state"><div class="empty-icon">🛡️</div><span class="pill">إدارة هلا طلب</span><h2>تعذر تحميل فحص الأمان</h2><p>${escapeHtml(e?.message||String(e))}</p><p>تأكد من تشغيل ملف admin_stage9_security.sql مرة واحدة في Supabase.</p></section>`;}
 }
 
+
+let realtimeMonitorTimer = null;
+let realtimeMonitorSessionPeak = 0;
+let realtimeMonitorBusy = false;
+
+function stopRealtimeMonitorAutoRefresh(){
+  if(realtimeMonitorTimer){ clearInterval(realtimeMonitorTimer); realtimeMonitorTimer=null; }
+  realtimeMonitorBusy=false;
+}
+
+function realtimeMonitorStatus(percent){
+  const p=Number(percent||0);
+  if(p>=95) return {label:'قريب جدًا من الحد', cls:'critical', icon:'🔴'};
+  if(p>=85) return {label:'تحذير', cls:'warning', icon:'🟠'};
+  if(p>=70) return {label:'يحتاج مراقبة', cls:'watch', icon:'🟡'};
+  return {label:'طبيعي', cls:'healthy', icon:'🟢'};
+}
+
+function fmtMonitorTime(v){
+  const d=v?new Date(v):new Date();
+  if(Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('ar-IQ',{hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});
+}
+
+async function fetchRealtimeMonitorSnapshot(){
+  const { data } = await supabase.auth.getSession();
+  const token=data?.session?.access_token;
+  if(!token) throw new Error('انتهت جلسة الإدارة. سجّل الدخول من جديد.');
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),12000);
+  try{
+    const response=await fetch(REALTIME_MONITOR_FUNCTION_URL,{
+      method:'GET',
+      headers:{'Authorization':`Bearer ${token}`,'Accept':'application/json'},
+      signal:controller.signal,
+      cache:'no-store',
+    });
+    const payload=await response.json().catch(()=>({}));
+    if(!response.ok || payload?.ok!==true){
+      const err=new Error(payload?.error||`تعذر قراءة الاتصالات (${response.status}).`);
+      err.code=payload?.code||'';
+      throw err;
+    }
+    return payload;
+  } finally { clearTimeout(timeout); }
+}
+
+function updateRealtimeMonitorUi(payload){
+  const current=Math.max(0,Number(payload?.connected_clients||0));
+  const limit=Math.max(1,Number(payload?.connection_limit||200));
+  const percent=Math.max(0,Math.min(999,(current/limit)*100));
+  realtimeMonitorSessionPeak=Math.max(realtimeMonitorSessionPeak,current);
+  const status=realtimeMonitorStatus(percent);
+
+  const currentEl=document.getElementById('rtCurrent'); if(currentEl) currentEl.textContent=fmtNumber(current);
+  const limitEl=document.getElementById('rtLimit'); if(limitEl) limitEl.textContent=fmtNumber(limit);
+  const percentEl=document.getElementById('rtPercent'); if(percentEl) percentEl.textContent=`${percent.toLocaleString('ar-IQ',{maximumFractionDigits:1})}%`;
+  const peakEl=document.getElementById('rtSessionPeak'); if(peakEl) peakEl.textContent=fmtNumber(realtimeMonitorSessionPeak);
+  const stampEl=document.getElementById('rtUpdatedAt'); if(stampEl) stampEl.textContent=fmtMonitorTime(payload?.measured_at);
+  const metricEl=document.getElementById('rtMetricSource'); if(metricEl) metricEl.textContent=payload?.metric_name ? `المصدر: ${payload.metric_name}` : 'Supabase Realtime';
+  const bar=document.getElementById('rtUsageBar'); if(bar) bar.style.width=`${Math.min(100,percent)}%`;
+  const statusBox=document.getElementById('rtStatusBox');
+  if(statusBox){
+    statusBox.className=`realtime-status-box ${status.cls}`;
+    statusBox.innerHTML=`<div class="realtime-status-icon">${status.icon}</div><div><span>حالة الحمل</span><h3>${escapeHtml(status.label)}</h3><p>${current>=limit?'وصل المشروع إلى الحد المحدد للاتصالات أو تجاوزه.':`متبقي تقريبًا ${fmtNumber(Math.max(0,limit-current))} اتصال قبل الحد الحالي.`}</p></div>`;
+  }
+  const msg=document.getElementById('rtMonitorMessage'); if(msg) msg.innerHTML='';
+  const btn=document.getElementById('refreshRealtimeMonitor'); if(btn){btn.disabled=false;btn.textContent='↻ تحديث الآن';}
+}
+
+function showRealtimeMonitorError(error){
+  const msg=document.getElementById('rtMonitorMessage');
+  if(msg){
+    const setup=String(error?.code||'')==='SETUP_REQUIRED';
+    msg.innerHTML=`<div class="alert ${setup?'warning':'error'}"><strong>${setup?'إعداد واحد مطلوب':'تعذر تحديث الاتصالات'}</strong><br>${escapeHtml(error?.message||'خطأ غير معروف')}${setup?'<br><small>شغّل Edge Function المرفقة واضف SUPABASE_MANAGEMENT_TOKEN كـ Secret في Supabase. المفتاح لا يوضع داخل لوحة الإدارة.</small>':''}</div>`;
+  }
+  const btn=document.getElementById('refreshRealtimeMonitor'); if(btn){btn.disabled=false;btn.textContent='↻ إعادة المحاولة';}
+}
+
+async function refreshRealtimeMonitor(){
+  if(realtimeMonitorBusy) return;
+  realtimeMonitorBusy=true;
+  const btn=document.getElementById('refreshRealtimeMonitor'); if(btn){btn.disabled=true;btn.textContent='جارٍ القراءة…';}
+  try{
+    const payload=await fetchRealtimeMonitorSnapshot();
+    if(!document.getElementById('realtimeMonitorPage')) return;
+    updateRealtimeMonitorUi(payload);
+  }catch(error){
+    if(error?.name!=='AbortError' && document.getElementById('realtimeMonitorPage')) showRealtimeMonitorError(error);
+  }finally{ realtimeMonitorBusy=false; }
+}
+
+function renderRealtimeMonitorPage(){
+  stopRealtimeMonitorAutoRefresh();
+  const content=document.getElementById('content'); if(!content) return;
+  content.innerHTML=`<div id="realtimeMonitorPage">
+    <section class="dashboard-hero realtime-monitor-hero"><div><span class="pill">مراقبة مباشرة</span><h2>اتصالات Supabase Realtime</h2><p>قراءة آمنة لعدد اتصالات WebSocket الفعلية في مشروع هلا طلب. يتم التحديث تلقائيًا كل 60 ثانية، والمفتاح الحساس محفوظ داخل Edge Function فقط.</p></div><button id="refreshRealtimeMonitor" class="secondary-btn">↻ تحديث الآن</button></section>
+    <section class="realtime-monitor-grid">
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">📡</div><div><span>المتصلون الآن</span><strong id="rtCurrent">—</strong><small>اتصالات Realtime الحالية</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">🎯</div><div><span>الحد الحالي</span><strong id="rtLimit">—</strong><small>يتغير من إعداد السيرفر بدون تحديث الواجهة</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">📊</div><div><span>نسبة الاستخدام</span><strong id="rtPercent">—</strong><small>من حد الاتصالات الحالي</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">⬆️</div><div><span>أعلى قراءة بهذه الجلسة</span><strong id="rtSessionPeak">${fmtNumber(realtimeMonitorSessionPeak)}</strong><small>منذ فتح صفحة المراقبة في هذه الجلسة</small></div></article>
+    </section>
+    <section id="rtStatusBox" class="realtime-status-box healthy"><div class="realtime-status-icon">🟢</div><div><span>حالة الحمل</span><h3>جارٍ القراءة…</h3><p>يتم الاتصال بخدمة المراقبة الآمنة.</p></div></section>
+    <article class="panel realtime-usage-panel"><div class="panel-head"><div><span>استخدام الاتصالات</span><h3>القرب من الحد</h3></div><span class="tag">تحديث كل 60 ثانية</span></div><div class="realtime-progress"><span id="rtUsageBar"></span></div><div class="realtime-monitor-meta"><span>آخر تحديث: <strong id="rtUpdatedAt">—</strong></span><span id="rtMetricSource">Supabase Realtime</span></div></article>
+    <div id="rtMonitorMessage"></div>
+    <section class="panel realtime-security-note"><div class="panel-head"><div><span>الأمان</span><h3>المفتاح السري غير موجود داخل الموقع</h3></div><span class="tag">Server-side</span></div><p>لوحة الإدارة ترسل جلسة المدير فقط إلى Edge Function. الـManagement Token يبقى Secret داخل Supabase ولا يمكن استخراجه من GitHub Pages أو المتصفح.</p></section>
+  </div>`;
+  document.getElementById('refreshRealtimeMonitor')?.addEventListener('click',refreshRealtimeMonitor);
+  refreshRealtimeMonitor();
+  realtimeMonitorTimer=setInterval(()=>{
+    if(document.getElementById('realtimeMonitorPage')) refreshRealtimeMonitor();
+    else stopRealtimeMonitorAutoRefresh();
+  },60000);
+}
+
 function wireDashboard() {
   const sidebar=document.getElementById('sidebar'), overlay=document.getElementById('sidebarOverlay'); const close=()=>{sidebar.classList.remove('open');overlay.classList.remove('show');};
   document.getElementById('menuBtn')?.addEventListener('click',()=>{sidebar.classList.toggle('open');overlay.classList.toggle('show');}); overlay.addEventListener('click',close);
-  document.querySelectorAll('.nav-item[data-page]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.nav-item[data-page]').forEach(x=>x.classList.remove('active'));btn.classList.add('active');const label=btn.textContent.trim();document.getElementById('pageTitle').textContent=label;btn.dataset.page==='dashboard'?renderStageTwoDashboard():btn.dataset.page==='orders'?renderOrdersPage():btn.dataset.page==='stores'?renderStoresPage():btn.dataset.page==='drivers'?renderDriversPage():btn.dataset.page==='users'?renderUsersPage():btn.dataset.page==='reports'?renderReportsPage():btn.dataset.page==='system'?renderSystemPage():btn.dataset.page==='settings'?renderSecurityPage():renderPlaceholder(btn.dataset.page,label);close();}));
+  document.querySelectorAll('.nav-item[data-page]').forEach(btn=>btn.addEventListener('click',()=>{stopRealtimeMonitorAutoRefresh();document.querySelectorAll('.nav-item[data-page]').forEach(x=>x.classList.remove('active'));btn.classList.add('active');const label=btn.textContent.trim();document.getElementById('pageTitle').textContent=label;btn.dataset.page==='dashboard'?renderStageTwoDashboard():btn.dataset.page==='orders'?renderOrdersPage():btn.dataset.page==='stores'?renderStoresPage():btn.dataset.page==='drivers'?renderDriversPage():btn.dataset.page==='users'?renderUsersPage():btn.dataset.page==='reports'?renderReportsPage():btn.dataset.page==='monitor'?renderRealtimeMonitorPage():btn.dataset.page==='system'?renderSystemPage():btn.dataset.page==='settings'?renderSecurityPage():renderPlaceholder(btn.dataset.page,label);close();}));
   document.getElementById('logoutBtn').addEventListener('click',async()=>{
     try{ await deactivateCurrentPushDevice(); }catch(_){}
     await supabase.auth.signOut();

@@ -1024,3 +1024,26 @@ body{overflow-x:hidden;}
 .simple-report-page{display:flex;flex-direction:column;gap:14px}.simple-report-back-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.simple-store-report-header{padding:18px}.simple-store-report-header h2{margin:4px 0 0}.simple-store-report-header p{margin:5px 0 0;color:var(--muted)}.simple-annual-report{padding:18px}.simple-report-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}.simple-report-metrics>div{padding:14px;border:1px solid var(--line);border-radius:14px;background:#fffaf6}.simple-report-metrics span{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}.simple-report-metrics b{font-size:22px}.simple-section-title{margin:4px 2px 10px}.simple-section-title span{font-size:12px;color:var(--muted)}.simple-section-title h3{margin:3px 0 0}.simple-month-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.simple-month-card{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px}.simple-month-card>div{display:flex;flex-direction:column;gap:5px}.simple-month-card span{font-weight:800}.simple-month-card strong{font-size:20px}.month-detail-metrics{margin:0}
 @media(max-width:900px){.simple-report-store-grid{grid-template-columns:1fr}.simple-month-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.simple-reports-hero{align-items:stretch}.simple-report-year{justify-content:space-between}.simple-store-report-card{align-items:stretch;flex-direction:column}.simple-open-report{width:100%}.simple-report-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.simple-month-grid{grid-template-columns:1fr}.simple-month-card{padding:14px}.simple-store-report-main>strong{font-size:21px}}
+
+
+/* Admin Stage 61 — secure Supabase Realtime connection monitor */
+.realtime-monitor-hero{align-items:center}
+.realtime-monitor-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.realtime-monitor-card{min-height:120px}
+.realtime-monitor-card strong{font-size:29px}
+.realtime-status-box{display:flex;align-items:center;gap:18px;border:1px solid var(--line);border-radius:20px;padding:20px;margin-bottom:16px;background:#fff}
+.realtime-status-icon{width:54px;height:54px;display:grid;place-items:center;border-radius:16px;background:#f6f7f9;font-size:27px;flex:0 0 auto}
+.realtime-status-box span{font-size:12px;color:var(--muted);font-weight:700}
+.realtime-status-box h3{margin:4px 0;font-size:22px}
+.realtime-status-box p{margin:0;color:var(--muted);line-height:1.7}
+.realtime-status-box.healthy{border-color:rgba(32,166,106,.30);background:linear-gradient(135deg,rgba(32,166,106,.08),#fff)}
+.realtime-status-box.watch{border-color:rgba(213,160,0,.34);background:linear-gradient(135deg,rgba(255,207,58,.12),#fff)}
+.realtime-status-box.warning{border-color:rgba(235,132,35,.36);background:linear-gradient(135deg,rgba(255,139,32,.12),#fff)}
+.realtime-status-box.critical{border-color:rgba(201,67,67,.35);background:linear-gradient(135deg,rgba(201,67,67,.10),#fff)}
+.realtime-usage-panel{margin-bottom:16px}
+.realtime-progress{height:16px;border-radius:999px;background:#eef1f4;overflow:hidden;margin:14px 0 10px}
+.realtime-progress>span{display:block;height:100%;width:0;background:linear-gradient(90deg,#25a56a,#ffb020,#e5533d);border-radius:inherit;transition:width .35s ease}
+.realtime-monitor-meta{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+.realtime-security-note p{margin:8px 0 0;color:var(--muted);line-height:1.8}
+@media(max-width:1100px){.realtime-monitor-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){.realtime-monitor-grid{grid-template-columns:1fr}.realtime-status-box{align-items:flex-start}.realtime-monitor-card strong{font-size:25px}}
