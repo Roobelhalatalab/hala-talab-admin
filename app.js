@@ -1077,7 +1077,7 @@ async function renderOrdersPage() {
 const STORE_REVIEW_OPTIONS = [
   ['pending','قيد المراجعة'], ['approved','مقبول'], ['rejected','مرفوض'], ['suspended','معلّق']
 ];
-let storesPageState = { rows:[], filtered:[], reviews:new Map(), owners:new Map(), controls:new Map(), selected:null };
+let storesPageState = { rows:[], filtered:[], reviews:new Map(), owners:new Map(), controls:new Map(), selected:null, section:'restaurants' };
 
 function storeReviewLabel(value='pending') {
   const s=String(value||'pending').toLowerCase();
@@ -1108,7 +1108,20 @@ function reviewForStore(row) { return storesPageState.reviews.get(String(row.id)
 function controlForStore(row) { return storesPageState.controls?.get(String(row.id)) || {store_id:row.id,lifecycle_status:'active',reason:''}; }
 function storeLifecycleLabel(row){const v=String(controlForStore(row).lifecycle_status||'active');return ({active:'نشط',paused:'موقوف مؤقتًا',archived:'مؤرشف / مغلق نهائيًا'})[v]||v;}
 function storeName(row) { return pick(row,['name','store_name','restaurant_name'],'متجر بدون اسم'); }
-function storeCategory(row) { return pick(row,['category','type','store_type','business_type'],'غير محدد'); }
+function storeCategory(row) {
+  return pick(row,['_category_name_ar','category','type','store_type','business_type'],'غير محدد');
+}
+function storeSection(row) {
+  const key=String(row?._category_key||'').trim().toLowerCase();
+  if(key==='restaurants'||key==='restaurant') return 'restaurants';
+  const values=[
+    row?._category_name_ar,row?._category_name_ku,row?._category_name_en,
+    row?.business_type,row?.store_type,row?.type,row?.category
+  ].map(v=>String(v||'').trim().toLowerCase());
+  if(values.some(v=>v==='restaurant'||v==='restaurants'||v==='مطاعم'||v==='المطاعم'||v==='مطعم'||v==='چێشتخانە'||v==='چێشتخانەکان')) return 'restaurants';
+  return 'stores';
+}
+function storeSectionLabel(row){return storeSection(row)==='restaurants'?'مطعم':'متجر';}
 function storeAddress(row) { return pick(row,['address','store_address','location_text','delivery_address'],'غير متوفر'); }
 function storeDisplayOrder(row) {
   const raw=row?.display_order;
@@ -1142,15 +1155,23 @@ async function saveStoreDisplayOrder(row) {
   row.display_order=data?.display_order ?? value;
   storesPageState.rows=sortStoresByDisplayOrder(storesPageState.rows);
   await systemAudit('update_store_display_order','store',row.id,{display_order:row.display_order});
-  box.innerHTML='<div class="alert success">تم حفظ ترتيب الظهور. الرقم الأصغر يظهر أولًا داخل قسمه في تطبيق العميل بعد اعتماد الترتيب هناك.</div>';
+  box.innerHTML='<div class="alert success">تم حفظ ترتيب الظهور. الرقم الأصغر يظهر أولًا داخل قسمه في تطبيق العميل.</div>';
   applyStoresFilters();
 }
 
 async function fetchStoresAdmin() {
   try {
-    const { data, error } = await supabase.from('stores').select('*').limit(5000);
-    if (error) return {ok:false,rows:[],error:error.message};
-    return {ok:true,rows:sortStoresByDisplayOrder(data||[])};
+    const [storesR,categoriesR]=await Promise.all([
+      supabase.from('stores').select('*').limit(5000),
+      supabase.from('system_categories').select('id,category_key,name_ar,name_ku,name_en').limit(5000)
+    ]);
+    if (storesR.error) return {ok:false,rows:[],error:storesR.error.message};
+    const categoryMap=new Map((categoriesR.data||[]).map(c=>[String(c.id),c]));
+    const rows=(storesR.data||[]).map(row=>{
+      const c=categoryMap.get(String(row.system_category_id||''));
+      return c?{...row,_category_key:c.category_key||'',_category_name_ar:c.name_ar||'',_category_name_ku:c.name_ku||'',_category_name_en:c.name_en||''}:row;
+    });
+    return {ok:true,rows:sortStoresByDisplayOrder(rows)};
   } catch(e) { return {ok:false,rows:[],error:String(e)}; }
 }
 async function loadStoreAdminLookups() {
@@ -1197,13 +1218,16 @@ function renderStoreRows(rows) {
 function applyStoresFilters() {
   const q=(document.getElementById('storesSearch')?.value||'').trim().toLowerCase();
   const reviewStatus=document.getElementById('storesReviewFilter')?.value||'all';
-  let rows=sortStoresByDisplayOrder(storesPageState.rows);
+  let rows=sortStoresByDisplayOrder(storesPageState.rows).filter(r=>storeSection(r)===storesPageState.section);
   if(q) rows=rows.filter(r=>storeSearchText(r).includes(q));
   if(reviewStatus!=='all') rows=rows.filter(r=>String(reviewForStore(r).review_status||'pending')===reviewStatus);
   storesPageState.filtered=rows;
   const body=document.getElementById('storesTableBody'); if(body) body.innerHTML=renderStoreRows(rows);
-  const count=document.getElementById('storesResultCount'); if(count) count.textContent=`${fmtNumber(rows.length)} متجر`;
+  const count=document.getElementById('storesResultCount'); if(count) count.textContent=`${fmtNumber(rows.length)} ${storesPageState.section==='restaurants'?'مطعم':'متجر'}`;
+  document.querySelectorAll('[data-store-section]').forEach(btn=>btn.classList.toggle('active',btn.dataset.storeSection===storesPageState.section));
+  const title=document.getElementById('storesSectionTitle'); if(title) title.textContent=storesPageState.section==='restaurants'?'المطاعم':'المتاجر';
   wireStoreRowButtons();
+  document.querySelectorAll('[data-store-section]').forEach(btn=>btn.addEventListener('click',()=>{storesPageState.section=btn.dataset.storeSection||'restaurants';applyStoresFilters();}));
   document.querySelectorAll('[data-metric-action="stores"]').forEach(b=>b.addEventListener('click',()=>{const v=b.dataset.metricValue||'all';const sel=document.getElementById('storesReviewFilter');if(v==='rejected_or_suspended'){if(sel)sel.value='rejected';}else if(sel)sel.value=v;applyStoresFilters();document.querySelector('.stores-toolbar')?.scrollIntoView({behavior:'smooth',block:'start'});}));
 }
 function wireStoreRowButtons() {
@@ -1325,7 +1349,7 @@ function openStoreDetails(row) {
       ${detailItem('هاتف المتجر',pick(row,['phone'],'غير متوفر'))}
       ${detailItem('هاتف صاحب الحساب',ownerPhoneForStore(row))}
       ${detailItem('البريد',pick(owner,['email'],'غير متوفر'))}
-      ${detailItem('النوع / التصنيف',storeCategory(row))}
+      ${detailItem('القسم',storeSectionLabel(row))}${detailItem('التصنيف',storeCategory(row))}
       ${detailItem('ترتيب الظهور',storeDisplayOrder(row)??'غير محدد')}
       ${detailItem('الحالة التشغيلية',`<span class=\"operational-pill ${storeOperationalClass(row)}\">${escapeHtml(storeOperationalStatus(row))}</span>`,true)}
       ${detailItem('مفعّل',storeBooleanLabel(pick(row,['is_active','active','enabled'],null)))}
@@ -1334,7 +1358,7 @@ function openStoreDetails(row) {
     </div>
     <div class="review-editor">
       <div class="panel-head"><div><span>تطبيق العميل</span><h3>ترتيب ظهور المتجر</h3></div></div>
-      <p class="panel-note">أدخل رقم الأولوية. الرقم 1 يظهر قبل 2، والمتاجر التي بدون رقم تظهر بعد المتاجر المرتبة. يستخدم نفس الحقل داخل قسم المطاعم أو قسم المتاجر.</p>
+      <p class="panel-note">الترتيب مستقل داخل القسم الحالي: المطاعم تُرتب مع المطاعم فقط، والمتاجر مع المتاجر فقط. الرقم 1 يظهر أولًا، وبعده 2 ثم 3، وغير المرتب يظهر بعدهم.</p>
       <label>ترتيب الظهور<input id="storeDisplayOrderInput" type="number" min="1" max="9999" step="1" value="${storeDisplayOrder(row)??''}" placeholder="مثال: 1" /></label>
       <button class="primary-btn compact" id="saveStoreDisplayOrder">حفظ ترتيب الظهور</button>
       <div id="storeOrderMessage"></div>
@@ -1394,26 +1418,34 @@ async function renderStoresPage() {
   content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل المتاجر...</h2><p>يتم قراءة جدول stores ومراجعات الإدارة من Supabase.</p></section>`;
   const [storesR,lookups]=await Promise.all([fetchStoresAdmin(),loadStoreAdminLookups()]);
   if(!storesR.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">🏪</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة المتاجر</h2><p>${escapeHtml(storesR.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage4_rls.sql</b> ثم أعد المحاولة.</p></section>`;return;}
-  storesPageState={rows:sortStoresByDisplayOrder(storesR.rows),filtered:sortStoresByDisplayOrder(storesR.rows),reviews:lookups.reviews,owners:lookups.owners,controls:lookups.controls||new Map(),selected:null};
+  storesPageState={rows:sortStoresByDisplayOrder(storesR.rows),filtered:[],reviews:lookups.reviews,owners:lookups.owners,controls:lookups.controls||new Map(),selected:null,section:'restaurants'};
   const counts={pending:0,approved:0,rejected:0,suspended:0}; storesR.rows.forEach(r=>{const s=reviewForStore(r).review_status||'pending'; if(counts[s]!==undefined)counts[s]++;});
+  const restaurantCount=storesR.rows.filter(r=>storeSection(r)==='restaurants').length;
+  const storeCount=storesR.rows.filter(r=>storeSection(r)==='stores').length;
   content.innerHTML=`
-    <section class="dashboard-hero"><div><span class="pill">إدارة هلا طلب</span><h2>إدارة المتاجر / المطاعم</h2><p>تابع المتاجر، حالتها التشغيلية وقرارات المراجعة من مكان واحد.</p></div><button id="refreshStores" class="secondary-btn">↻ تحديث المتاجر</button></section>
+    <section class="dashboard-hero"><div><span class="pill">إدارة هلا طلب</span><h2>المطاعم والمتاجر</h2><p>المطاعم منفصلة عن بقية المتاجر، وكل قسم له ترتيب ظهور مستقل داخل تطبيق العميل.</p></div><button id="refreshStores" class="secondary-btn">↻ تحديث</button></section>
+    <section class="store-section-tabs system-tabs">
+      <button type="button" class="system-tab active" data-store-section="restaurants">🍽️ المطاعم <span>${fmtNumber(restaurantCount)}</span></button>
+      <button type="button" class="system-tab" data-store-section="stores">🏪 المتاجر <span>${fmtNumber(storeCount)}</span></button>
+    </section>
     <section class="store-summary-grid">
-      ${actionMetricCard('إجمالي المتاجر',fmtNumber(storesR.rows.length),'كل المتاجر المسجلة','🏪','stores','all')}
+      ${actionMetricCard('إجمالي الحسابات',fmtNumber(storesR.rows.length),'مطاعم ومتاجر','🏪','stores','all')}
       ${actionMetricCard('قيد المراجعة',fmtNumber(counts.pending),'لم يُتخذ قرار إداري بعد','🕒','stores','pending')}
       ${actionMetricCard('مقبولة',fmtNumber(counts.approved),'مراجعات إدارية مكتملة','✅','stores','approved')}
       ${actionMetricCard('مرفوضة / معلقة',fmtNumber(counts.rejected+counts.suspended),'قرارات تحتاج متابعة','⛔','stores','rejected_or_suspended')}
     </section>
     <section class="stores-toolbar">
-      <label class="search-box">🔎<input id="storesSearch" type="search" placeholder="ابحث باسم المتجر، الهاتف، صاحب الحساب، النوع..." /></label>
+      <strong id="storesSectionTitle">المطاعم</strong>
+      <label class="search-box">🔎<input id="storesSearch" type="search" placeholder="ابحث بالاسم، الهاتف أو صاحب الحساب..." /></label>
       <select id="storesReviewFilter"><option value="all">كل حالات المراجعة</option>${STORE_REVIEW_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select>
-      <span id="storesResultCount" class="tag">${fmtNumber(storesR.rows.length)} متجر</span>
+      <span id="storesResultCount" class="tag">${fmtNumber(restaurantCount)} مطعم</span>
     </section>
-    <article class="panel stores-panel"><div class="table-wrap"><table class="data-table stores-table"><thead><tr><th>المتجر</th><th>صاحب الحساب</th><th>الهاتف</th><th>ترتيب الظهور</th><th>التشغيل</th><th>المراجعة</th><th></th></tr></thead><tbody id="storesTableBody">${renderStoreRows(sortStoresByDisplayOrder(storesR.rows))}</tbody></table></div></article>`;
+    <article class="panel stores-panel"><div class="table-wrap"><table class="data-table stores-table"><thead><tr><th>الاسم</th><th>صاحب الحساب</th><th>الهاتف</th><th>ترتيب الظهور</th><th>التشغيل</th><th>المراجعة</th><th></th></tr></thead><tbody id="storesTableBody"></tbody></table></div></article>`;
   document.getElementById('refreshStores')?.addEventListener('click',renderStoresPage);
   document.getElementById('storesSearch')?.addEventListener('input',applyStoresFilters);
   document.getElementById('storesReviewFilter')?.addEventListener('change',applyStoresFilters);
-  wireStoreRowButtons();
+  document.querySelectorAll('[data-store-section]').forEach(btn=>btn.addEventListener('click',()=>{storesPageState.section=btn.dataset.storeSection||'restaurants';applyStoresFilters();}));
+  applyStoresFilters();
   consumePendingAdminTarget('stores');
 }
 
