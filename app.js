@@ -4,7 +4,6 @@ import { APP_CONFIG } from './config.js';
 
 const app = document.getElementById('app');
 const ADMIN_PUSH_FUNCTION_URL = `${APP_CONFIG.supabaseUrl}/functions/v1/admin-onesignal-push`;
-const REALTIME_MONITOR_FUNCTION_URL = `${APP_CONFIG.supabaseUrl}/functions/v1/admin-realtime-monitor`;
 
 async function callAdminPushDeviceApi(action, subscriptionId, extra = {}) {
   const { data } = await supabase.auth.getSession();
@@ -3023,20 +3022,63 @@ async function renderSecurityPage(forcedTab='overview'){
 
 
 let realtimeMonitorTimer = null;
+let realtimeMonitorPresenceChannel = null;
 let realtimeMonitorSessionPeak = 0;
 let realtimeMonitorBusy = false;
+let realtimeMonitorGeneration = 0;
+let realtimeMonitorLastSnapshot = {
+  total: 0,
+  customer: 0,
+  business: 0,
+  driver: 0,
+  unknown: 0,
+  measured_at: null,
+};
 
-function stopRealtimeMonitorAutoRefresh(){
-  if(realtimeMonitorTimer){ clearInterval(realtimeMonitorTimer); realtimeMonitorTimer=null; }
-  realtimeMonitorBusy=false;
+function normalizePresenceRole(value){
+  const role=String(value||'').trim().toLowerCase();
+  if(['customer','client','user'].includes(role)) return 'customer';
+  if(['business','merchant','store','restaurant'].includes(role)) return 'business';
+  if(['driver','courier'].includes(role)) return 'driver';
+  return 'unknown';
 }
 
-function realtimeMonitorStatus(percent){
-  const p=Number(percent||0);
-  if(p>=95) return {label:'قريب جدًا من الحد', cls:'critical', icon:'🔴'};
-  if(p>=85) return {label:'تحذير', cls:'warning', icon:'🟠'};
-  if(p>=70) return {label:'يحتاج مراقبة', cls:'watch', icon:'🟡'};
-  return {label:'طبيعي', cls:'healthy', icon:'🟢'};
+function flattenPresenceState(state){
+  const rows=[];
+  Object.values(state||{}).forEach((bucket)=>{
+    if(Array.isArray(bucket)) bucket.forEach((item)=>{ if(item && typeof item==='object') rows.push(item); });
+    else if(bucket && typeof bucket==='object') rows.push(bucket);
+  });
+  return rows;
+}
+
+function realtimePresenceSnapshot(){
+  const channel=realtimeMonitorPresenceChannel;
+  if(!channel) return {...realtimeMonitorLastSnapshot, measured_at:new Date().toISOString()};
+  let state={};
+  try{ state=channel.presenceState?.()||{}; }catch(_){ state={}; }
+  const rows=flattenPresenceState(state);
+  const counts={customer:0,business:0,driver:0,unknown:0};
+  rows.forEach((row)=>{ counts[normalizePresenceRole(row?.role)]++; });
+  const snapshot={
+    total:rows.length,
+    customer:counts.customer,
+    business:counts.business,
+    driver:counts.driver,
+    unknown:counts.unknown,
+    measured_at:new Date().toISOString(),
+  };
+  realtimeMonitorLastSnapshot=snapshot;
+  return snapshot;
+}
+
+function stopRealtimeMonitorAutoRefresh(){
+  realtimeMonitorGeneration++;
+  if(realtimeMonitorTimer){ clearInterval(realtimeMonitorTimer); realtimeMonitorTimer=null; }
+  realtimeMonitorBusy=false;
+  const channel=realtimeMonitorPresenceChannel;
+  realtimeMonitorPresenceChannel=null;
+  if(channel && supabase){ try{ void supabase.removeChannel(channel); }catch(_){ } }
 }
 
 function fmtMonitorTime(v){
@@ -3045,47 +3087,23 @@ function fmtMonitorTime(v){
   return d.toLocaleTimeString('ar-IQ',{hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});
 }
 
-async function fetchRealtimeMonitorSnapshot(){
-  const { data } = await supabase.auth.getSession();
-  const token=data?.session?.access_token;
-  if(!token) throw new Error('انتهت جلسة الإدارة. سجّل الدخول من جديد.');
-  const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),12000);
-  try{
-    const response=await fetch(REALTIME_MONITOR_FUNCTION_URL,{
-      method:'GET',
-      headers:{'Authorization':`Bearer ${token}`,'Accept':'application/json'},
-      signal:controller.signal,
-      cache:'no-store',
-    });
-    const payload=await response.json().catch(()=>({}));
-    if(!response.ok || payload?.ok!==true){
-      const err=new Error(payload?.error||`تعذر قراءة الاتصالات (${response.status}).`);
-      err.code=payload?.code||'';
-      throw err;
-    }
-    return payload;
-  } finally { clearTimeout(timeout); }
-}
-
 function updateRealtimeMonitorUi(payload){
-  const current=Math.max(0,Number(payload?.connected_clients||0));
-  const limit=Math.max(1,Number(payload?.connection_limit||200));
-  const percent=Math.max(0,Math.min(999,(current/limit)*100));
+  const current=Math.max(0,Number(payload?.total||0));
+  const customer=Math.max(0,Number(payload?.customer||0));
+  const business=Math.max(0,Number(payload?.business||0));
+  const driver=Math.max(0,Number(payload?.driver||0));
+  const unknown=Math.max(0,Number(payload?.unknown||0));
   realtimeMonitorSessionPeak=Math.max(realtimeMonitorSessionPeak,current);
-  const status=realtimeMonitorStatus(percent);
 
-  const currentEl=document.getElementById('rtCurrent'); if(currentEl) currentEl.textContent=fmtNumber(current);
-  const limitEl=document.getElementById('rtLimit'); if(limitEl) limitEl.textContent=fmtNumber(limit);
-  const percentEl=document.getElementById('rtPercent'); if(percentEl) percentEl.textContent=`${percent.toLocaleString('ar-IQ',{maximumFractionDigits:1})}%`;
-  const peakEl=document.getElementById('rtSessionPeak'); if(peakEl) peakEl.textContent=fmtNumber(realtimeMonitorSessionPeak);
+  const values={rtCurrent:current,rtCustomers:customer,rtBusinesses:business,rtDrivers:driver,rtSessionPeak:realtimeMonitorSessionPeak};
+  Object.entries(values).forEach(([id,value])=>{ const el=document.getElementById(id); if(el) el.textContent=fmtNumber(value); });
   const stampEl=document.getElementById('rtUpdatedAt'); if(stampEl) stampEl.textContent=fmtMonitorTime(payload?.measured_at);
-  const metricEl=document.getElementById('rtMetricSource'); if(metricEl) metricEl.textContent=payload?.metric_name ? `المصدر: ${payload.metric_name}` : 'Supabase Realtime';
-  const bar=document.getElementById('rtUsageBar'); if(bar) bar.style.width=`${Math.min(100,percent)}%`;
+  const sourceEl=document.getElementById('rtMetricSource'); if(sourceEl) sourceEl.textContent='المصدر: Supabase Presence — hala_online_users';
+
   const statusBox=document.getElementById('rtStatusBox');
   if(statusBox){
-    statusBox.className=`realtime-status-box ${status.cls}`;
-    statusBox.innerHTML=`<div class="realtime-status-icon">${status.icon}</div><div><span>حالة الحمل</span><h3>${escapeHtml(status.label)}</h3><p>${current>=limit?'وصل المشروع إلى الحد المحدد للاتصالات أو تجاوزه.':`متبقي تقريبًا ${fmtNumber(Math.max(0,limit-current))} اتصال قبل الحد الحالي.`}</p></div>`;
+    statusBox.className='realtime-status-box healthy';
+    statusBox.innerHTML=`<div class="realtime-status-icon">🟢</div><div><span>حالة المراقبة</span><h3>متصل مباشرة</h3><p>العدد يتحدث فورًا عند دخول أو خروج العميل أو المتجر أو السائق من التطبيق.${unknown?` توجد ${fmtNumber(unknown)} جلسة بدون دور معروف.`:''}</p></div>`;
   }
   const msg=document.getElementById('rtMonitorMessage'); if(msg) msg.innerHTML='';
   const btn=document.getElementById('refreshRealtimeMonitor'); if(btn){btn.disabled=false;btn.textContent='↻ تحديث الآن';}
@@ -3093,10 +3111,7 @@ function updateRealtimeMonitorUi(payload){
 
 function showRealtimeMonitorError(error){
   const msg=document.getElementById('rtMonitorMessage');
-  if(msg){
-    const setup=String(error?.code||'')==='SETUP_REQUIRED';
-    msg.innerHTML=`<div class="alert ${setup?'warning':'error'}"><strong>${setup?'إعداد واحد مطلوب':'تعذر تحديث الاتصالات'}</strong><br>${escapeHtml(error?.message||'خطأ غير معروف')}${setup?'<br><small>شغّل Edge Function المرفقة واضف SUPABASE_MANAGEMENT_TOKEN كـ Secret في Supabase. المفتاح لا يوضع داخل لوحة الإدارة.</small>':''}</div>`;
-  }
+  if(msg) msg.innerHTML=`<div class="alert error"><strong>تعذر قراءة Presence</strong><br>${escapeHtml(error?.message||'خطأ غير معروف')}<br><small>تأكد أن Realtime متاح وأن التطبيقات تستخدم قناة hala_online_users.</small></div>`;
   const btn=document.getElementById('refreshRealtimeMonitor'); if(btn){btn.disabled=false;btn.textContent='↻ إعادة المحاولة';}
 }
 
@@ -3105,32 +3120,58 @@ async function refreshRealtimeMonitor(){
   realtimeMonitorBusy=true;
   const btn=document.getElementById('refreshRealtimeMonitor'); if(btn){btn.disabled=true;btn.textContent='جارٍ القراءة…';}
   try{
-    const payload=await fetchRealtimeMonitorSnapshot();
-    if(!document.getElementById('realtimeMonitorPage')) return;
-    updateRealtimeMonitorUi(payload);
+    const snapshot=realtimePresenceSnapshot();
+    if(document.getElementById('realtimeMonitorPage')) updateRealtimeMonitorUi(snapshot);
   }catch(error){
-    if(error?.name!=='AbortError' && document.getElementById('realtimeMonitorPage')) showRealtimeMonitorError(error);
+    if(document.getElementById('realtimeMonitorPage')) showRealtimeMonitorError(error);
   }finally{ realtimeMonitorBusy=false; }
+}
+
+function startRealtimePresenceMonitor(){
+  if(!supabase) return;
+  const generation=++realtimeMonitorGeneration;
+  const channel=supabase
+    .channel('hala_online_users')
+    .on('presence',{event:'sync'},()=>{
+      if(generation!==realtimeMonitorGeneration || realtimeMonitorPresenceChannel!==channel) return;
+      refreshRealtimeMonitor();
+    })
+    .on('presence',{event:'join'},()=>{
+      if(generation!==realtimeMonitorGeneration || realtimeMonitorPresenceChannel!==channel) return;
+      setTimeout(refreshRealtimeMonitor,80);
+    })
+    .on('presence',{event:'leave'},()=>{
+      if(generation!==realtimeMonitorGeneration || realtimeMonitorPresenceChannel!==channel) return;
+      setTimeout(refreshRealtimeMonitor,80);
+    });
+  realtimeMonitorPresenceChannel=channel;
+  channel.subscribe((status,error)=>{
+    if(generation!==realtimeMonitorGeneration || realtimeMonitorPresenceChannel!==channel) return;
+    const normalized=String(status||'').toUpperCase();
+    if(normalized==='SUBSCRIBED') refreshRealtimeMonitor();
+    else if(error) showRealtimeMonitorError(error);
+  });
 }
 
 function renderRealtimeMonitorPage(){
   stopRealtimeMonitorAutoRefresh();
   const content=document.getElementById('content'); if(!content) return;
   content.innerHTML=`<div id="realtimeMonitorPage">
-    <section class="dashboard-hero realtime-monitor-hero"><div><span class="pill">مراقبة مباشرة</span><h2>اتصالات Supabase Realtime</h2><p>قراءة آمنة لعدد اتصالات WebSocket الفعلية في مشروع هلا طلب. يتم التحديث تلقائيًا كل 60 ثانية، والمفتاح الحساس محفوظ داخل Edge Function فقط.</p></div><button id="refreshRealtimeMonitor" class="secondary-btn">↻ تحديث الآن</button></section>
+    <section class="dashboard-hero realtime-monitor-hero"><div><span class="pill">مراقبة مباشرة</span><h2>المتصلون الآن في هلا طلب</h2><p>قراءة مباشرة من Supabase Presence للتطبيقات الأربعة. تتحدث فورًا عند الدخول والخروج، مع فحص احتياطي كل 60 ثانية.</p></div><button id="refreshRealtimeMonitor" class="secondary-btn">↻ تحديث الآن</button></section>
     <section class="realtime-monitor-grid">
-      <article class="metric-card realtime-monitor-card"><div class="metric-icon">📡</div><div><span>المتصلون الآن</span><strong id="rtCurrent">—</strong><small>اتصالات Realtime الحالية</small></div></article>
-      <article class="metric-card realtime-monitor-card"><div class="metric-icon">🎯</div><div><span>الحد الحالي</span><strong id="rtLimit">—</strong><small>يتغير من إعداد السيرفر بدون تحديث الواجهة</small></div></article>
-      <article class="metric-card realtime-monitor-card"><div class="metric-icon">📊</div><div><span>نسبة الاستخدام</span><strong id="rtPercent">—</strong><small>من حد الاتصالات الحالي</small></div></article>
-      <article class="metric-card realtime-monitor-card"><div class="metric-icon">⬆️</div><div><span>أعلى قراءة بهذه الجلسة</span><strong id="rtSessionPeak">${fmtNumber(realtimeMonitorSessionPeak)}</strong><small>منذ فتح صفحة المراقبة في هذه الجلسة</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">📡</div><div><span>المتصلون الآن</span><strong id="rtCurrent">—</strong><small>إجمالي جلسات التطبيقات المفتوحة</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">👤</div><div><span>العملاء</span><strong id="rtCustomers">—</strong><small>تطبيق العميل Android + iOS</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">🏪</div><div><span>المتاجر</span><strong id="rtBusinesses">—</strong><small>حسابات business المتصلة</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">🚚</div><div><span>السائقون</span><strong id="rtDrivers">—</strong><small>حسابات driver المتصلة</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">⬆️</div><div><span>أعلى قراءة بهذه الجلسة</span><strong id="rtSessionPeak">${fmtNumber(realtimeMonitorSessionPeak)}</strong><small>منذ فتح صفحة المراقبة</small></div></article>
     </section>
-    <section id="rtStatusBox" class="realtime-status-box healthy"><div class="realtime-status-icon">🟢</div><div><span>حالة الحمل</span><h3>جارٍ القراءة…</h3><p>يتم الاتصال بخدمة المراقبة الآمنة.</p></div></section>
-    <article class="panel realtime-usage-panel"><div class="panel-head"><div><span>استخدام الاتصالات</span><h3>القرب من الحد</h3></div><span class="tag">تحديث كل 60 ثانية</span></div><div class="realtime-progress"><span id="rtUsageBar"></span></div><div class="realtime-monitor-meta"><span>آخر تحديث: <strong id="rtUpdatedAt">—</strong></span><span id="rtMetricSource">Supabase Realtime</span></div></article>
+    <section id="rtStatusBox" class="realtime-status-box healthy"><div class="realtime-status-icon">🟢</div><div><span>حالة المراقبة</span><h3>جارٍ الاتصال…</h3><p>يتم الاشتراك في قناة Presence المشتركة.</p></div></section>
+    <article class="panel realtime-usage-panel"><div class="panel-head"><div><span>Presence مباشر</span><h3>توزيع المتصلين حسب الدور</h3></div><span class="tag">Live + فحص كل 60 ثانية</span></div><div class="realtime-monitor-meta"><span>آخر تحديث: <strong id="rtUpdatedAt">—</strong></span><span id="rtMetricSource">Supabase Presence</span></div></article>
     <div id="rtMonitorMessage"></div>
-    <section class="panel realtime-security-note"><div class="panel-head"><div><span>الأمان</span><h3>المفتاح السري غير موجود داخل الموقع</h3></div><span class="tag">Server-side</span></div><p>لوحة الإدارة ترسل جلسة المدير فقط إلى Edge Function. الـManagement Token يبقى Secret داخل Supabase ولا يمكن استخراجه من GitHub Pages أو المتصفح.</p></section>
+    <section class="panel realtime-security-note"><div class="panel-head"><div><span>ملاحظة</span><h3>هذه الصفحة تعد جلسات التطبيقات الفعلية</h3></div><span class="tag">Presence</span></div><p>كل جهاز مفتوح في الواجهة يسجل Presence واحدًا. إذا فتح نفس الحساب على جهازين فسيظهر كجلستين. هذا الرقم مفيد لمعرفة الموجودين داخل تطبيقات هلا طلب، لكنه ليس نفس مقياس Supabase الخام لعدد WebSocket connections الكلي.</p></section>
   </div>`;
   document.getElementById('refreshRealtimeMonitor')?.addEventListener('click',refreshRealtimeMonitor);
-  refreshRealtimeMonitor();
+  startRealtimePresenceMonitor();
   realtimeMonitorTimer=setInterval(()=>{
     if(document.getElementById('realtimeMonitorPage')) refreshRealtimeMonitor();
     else stopRealtimeMonitorAutoRefresh();

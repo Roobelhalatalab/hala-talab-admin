@@ -1028,7 +1028,7 @@ body{overflow-x:hidden;}
 
 /* Admin Stage 61 — secure Supabase Realtime connection monitor */
 .realtime-monitor-hero{align-items:center}
-.realtime-monitor-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.realtime-monitor-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:16px}
 .realtime-monitor-card{min-height:120px}
 .realtime-monitor-card strong{font-size:29px}
 .realtime-status-box{display:flex;align-items:center;gap:18px;border:1px solid var(--line);border-radius:20px;padding:20px;margin-bottom:16px;background:#fff}
