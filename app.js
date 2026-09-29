@@ -1149,10 +1149,10 @@ async function saveStoreDisplayOrder(row) {
     return;
   }
   btn.disabled=true; btn.textContent='جارٍ الحفظ...'; box.innerHTML='';
-  const {data,error}=await supabase.from('stores').update({display_order:value}).eq('id',row.id).select().maybeSingle();
+  const {data,error}=await supabase.rpc('admin_set_store_display_order_v60',{p_store_id:row.id,p_display_order:value});
   btn.disabled=false; btn.textContent='حفظ ترتيب الظهور';
-  if(error){box.innerHTML=`<div class="alert error">تعذر حفظ ترتيب الظهور: ${escapeHtml(error.message)}. شغّل ملف STAGE_54_STORE_DISPLAY_ORDER.sql مرة واحدة.</div>`;return;}
-  row.display_order=data?.display_order ?? value;
+  if(error){box.innerHTML=`<div class="alert error">تعذر حفظ ترتيب الظهور: ${escapeHtml(error.message)}. شغّل ملف STAGE_60_FIX_STORE_ORDER_SAVE.sql مرة واحدة.</div>`;return;}
+  row.display_order=(data===null||data===undefined)?value:Number(data);
   storesPageState.rows=sortStoresByDisplayOrder(storesPageState.rows);
   await systemAudit('update_store_display_order','store',row.id,{display_order:row.display_order});
   box.innerHTML='<div class="alert success">تم حفظ ترتيب الظهور. الرقم الأصغر يظهر أولًا داخل قسمه في تطبيق العميل.</div>';
