@@ -1,6 +1,6 @@
 importScripts("https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js");
 
-const CACHE_NAME = 'hala-talab-admin-v62';
+const CACHE_NAME = 'hala-talab-admin-v63';
 const BASE = '/hala-talab-admin/';
 const APP_SHELL = [
   BASE,

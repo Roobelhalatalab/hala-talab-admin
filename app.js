@@ -3026,6 +3026,7 @@ let realtimeMonitorPresenceChannel = null;
 let realtimeMonitorSessionPeak = 0;
 let realtimeMonitorBusy = false;
 let realtimeMonitorGeneration = 0;
+const PRESENCE_REFERENCE_LIMIT = 200; // Free plan reference limit; change to 500 if plan becomes Pro.
 let realtimeMonitorLastSnapshot = {
   total: 0,
   customer: 0,
@@ -3081,6 +3082,14 @@ function stopRealtimeMonitorAutoRefresh(){
   if(channel && supabase){ try{ void supabase.removeChannel(channel); }catch(_){ } }
 }
 
+function realtimeMonitorStatus(percent){
+  const p=Number(percent||0);
+  if(p>=95) return {label:'منطقة الخطر', cls:'critical', icon:'🔴'};
+  if(p>=85) return {label:'تحذير', cls:'warning', icon:'🟠'};
+  if(p>=70) return {label:'يحتاج مراقبة', cls:'watch', icon:'🟡'};
+  return {label:'طبيعي', cls:'healthy', icon:'🟢'};
+}
+
 function fmtMonitorTime(v){
   const d=v?new Date(v):new Date();
   if(Number.isNaN(d.getTime())) return '—';
@@ -3093,17 +3102,23 @@ function updateRealtimeMonitorUi(payload){
   const business=Math.max(0,Number(payload?.business||0));
   const driver=Math.max(0,Number(payload?.driver||0));
   const unknown=Math.max(0,Number(payload?.unknown||0));
+  const limit=PRESENCE_REFERENCE_LIMIT;
+  const percent=Math.max(0,Math.min(999,(current/limit)*100));
+  const status=realtimeMonitorStatus(percent);
   realtimeMonitorSessionPeak=Math.max(realtimeMonitorSessionPeak,current);
 
-  const values={rtCurrent:current,rtCustomers:customer,rtBusinesses:business,rtDrivers:driver,rtSessionPeak:realtimeMonitorSessionPeak};
+  const values={rtCurrent:current,rtCustomers:customer,rtBusinesses:business,rtDrivers:driver,rtReferenceLimit:limit,rtSessionPeak:realtimeMonitorSessionPeak};
   Object.entries(values).forEach(([id,value])=>{ const el=document.getElementById(id); if(el) el.textContent=fmtNumber(value); });
+  const percentEl=document.getElementById('rtPercent'); if(percentEl) percentEl.textContent=`${percent.toLocaleString('ar-IQ',{maximumFractionDigits:1})}%`;
   const stampEl=document.getElementById('rtUpdatedAt'); if(stampEl) stampEl.textContent=fmtMonitorTime(payload?.measured_at);
   const sourceEl=document.getElementById('rtMetricSource'); if(sourceEl) sourceEl.textContent='المصدر: Supabase Presence — hala_online_users';
+  const bar=document.getElementById('rtUsageBar'); if(bar) bar.style.width=`${Math.min(100,percent)}%`;
 
   const statusBox=document.getElementById('rtStatusBox');
   if(statusBox){
-    statusBox.className='realtime-status-box healthy';
-    statusBox.innerHTML=`<div class="realtime-status-icon">🟢</div><div><span>حالة المراقبة</span><h3>متصل مباشرة</h3><p>العدد يتحدث فورًا عند دخول أو خروج العميل أو المتجر أو السائق من التطبيق.${unknown?` توجد ${fmtNumber(unknown)} جلسة بدون دور معروف.`:''}</p></div>`;
+    statusBox.className=`realtime-status-box ${status.cls}`;
+    const remaining=Math.max(0,limit-current);
+    statusBox.innerHTML=`<div class="realtime-status-icon">${status.icon}</div><div><span>حالة الحمل</span><h3>${escapeHtml(status.label)}</h3><p>${current>=limit?'وصل عدد جلسات Presence إلى الحد المرجعي أو تجاوزه.':`متبقي تقريبًا ${fmtNumber(remaining)} جلسة قبل الحد المرجعي ${fmtNumber(limit)}.`}${unknown?` توجد ${fmtNumber(unknown)} جلسة بدون دور معروف.`:''}</p></div>`;
   }
   const msg=document.getElementById('rtMonitorMessage'); if(msg) msg.innerHTML='';
   const btn=document.getElementById('refreshRealtimeMonitor'); if(btn){btn.disabled=false;btn.textContent='↻ تحديث الآن';}
@@ -3163,12 +3178,14 @@ function renderRealtimeMonitorPage(){
       <article class="metric-card realtime-monitor-card"><div class="metric-icon">👤</div><div><span>العملاء</span><strong id="rtCustomers">—</strong><small>تطبيق العميل Android + iOS</small></div></article>
       <article class="metric-card realtime-monitor-card"><div class="metric-icon">🏪</div><div><span>المتاجر</span><strong id="rtBusinesses">—</strong><small>حسابات business المتصلة</small></div></article>
       <article class="metric-card realtime-monitor-card"><div class="metric-icon">🚚</div><div><span>السائقون</span><strong id="rtDrivers">—</strong><small>حسابات driver المتصلة</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">🎯</div><div><span>الحد المرجعي</span><strong id="rtReferenceLimit">${fmtNumber(PRESENCE_REFERENCE_LIMIT)}</strong><small>مرجع خطة Free الحالية</small></div></article>
+      <article class="metric-card realtime-monitor-card"><div class="metric-icon">📊</div><div><span>نسبة الجلسات من الحد</span><strong id="rtPercent">—</strong><small>مؤشر تقديري للحمل وليس عداد Supabase الرسمي</small></div></article>
       <article class="metric-card realtime-monitor-card"><div class="metric-icon">⬆️</div><div><span>أعلى قراءة بهذه الجلسة</span><strong id="rtSessionPeak">${fmtNumber(realtimeMonitorSessionPeak)}</strong><small>منذ فتح صفحة المراقبة</small></div></article>
     </section>
-    <section id="rtStatusBox" class="realtime-status-box healthy"><div class="realtime-status-icon">🟢</div><div><span>حالة المراقبة</span><h3>جارٍ الاتصال…</h3><p>يتم الاشتراك في قناة Presence المشتركة.</p></div></section>
-    <article class="panel realtime-usage-panel"><div class="panel-head"><div><span>Presence مباشر</span><h3>توزيع المتصلين حسب الدور</h3></div><span class="tag">Live + فحص كل 60 ثانية</span></div><div class="realtime-monitor-meta"><span>آخر تحديث: <strong id="rtUpdatedAt">—</strong></span><span id="rtMetricSource">Supabase Presence</span></div></article>
+    <section id="rtStatusBox" class="realtime-status-box healthy"><div class="realtime-status-icon">🟢</div><div><span>حالة الحمل</span><h3>جارٍ الاتصال…</h3><p>يتم الاشتراك في قناة Presence المشتركة.</p></div></section>
+    <article class="panel realtime-usage-panel"><div class="panel-head"><div><span>مؤشر الحمل</span><h3>القرب من الحد المرجعي</h3></div><span class="tag">Live + فحص كل 60 ثانية</span></div><div class="realtime-progress"><span id="rtUsageBar"></span></div><div class="realtime-monitor-meta"><span>آخر تحديث: <strong id="rtUpdatedAt">—</strong></span><span id="rtMetricSource">Supabase Presence</span></div></article>
     <div id="rtMonitorMessage"></div>
-    <section class="panel realtime-security-note"><div class="panel-head"><div><span>ملاحظة</span><h3>هذه الصفحة تعد جلسات التطبيقات الفعلية</h3></div><span class="tag">Presence</span></div><p>كل جهاز مفتوح في الواجهة يسجل Presence واحدًا. إذا فتح نفس الحساب على جهازين فسيظهر كجلستين. هذا الرقم مفيد لمعرفة الموجودين داخل تطبيقات هلا طلب، لكنه ليس نفس مقياس Supabase الخام لعدد WebSocket connections الكلي.</p></section>
+    <section class="panel realtime-security-note"><div class="panel-head"><div><span>ملاحظة</span><h3>هذه الصفحة تعد جلسات التطبيقات الفعلية</h3></div><span class="tag">Presence</span></div><p>كل جهاز مفتوح في الواجهة يسجل Presence واحدًا. إذا فتح نفس الحساب على جهازين فسيظهر كجلستين. النسبة وحالة الحمل تقارن هذه الجلسات بحد مرجعي 200 لخطة Free الحالية: أقل من 70% طبيعي، 70–84% مراقبة، 85–94% تحذير، و95% فأكثر منطقة خطر. هذا مؤشر عملي وليس نفس عداد WebSocket الرسمي داخل Supabase.</p></section>
   </div>`;
   document.getElementById('refreshRealtimeMonitor')?.addEventListener('click',refreshRealtimeMonitor);
   startRealtimePresenceMonitor();
