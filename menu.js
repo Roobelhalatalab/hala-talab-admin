@@ -320,23 +320,16 @@ function bindShiftSwitcher(){
 }
 
 function renderHero(store) {
-  const logo=storeLogo(store),address=storeAddress(store),avg=heroRating(store);
-  const deliveryTime=formatDeliveryTime(storeDeliveryMinutes(store));
-  const deliveryFee=formatDeliveryFee(storeDeliveryFee(store));
+  const logo=storeLogo(store),address=storeAddress(store);
   const selected=activeShift();
   const hours=shiftMode()===2 ? (shiftHours(selected)||'حسب جدول الشفت') : (storeHours(store)||'غير محدد');
-  const businessType=storeBusinessType(store)||'عرض التفاصيل';
   const firstFood=state.products.find((p)=>productImage(p));
   const hero=storeCover(store)||productImage(firstFood||{})||logo;
   return `<section class="client-style-hero">
     <div class="hero-cover ${hero?'':'hero-cover-empty'}" ${hero?`style="background-image:linear-gradient(180deg,rgba(0,0,0,.06),rgba(0,0,0,.28)),url('${escapeHtml(hero)}')"`:''}></div>
     <div class="store-profile-card">
       <div class="store-identity">${logo?`<img class="store-logo" src="${escapeHtml(logo)}" alt="شعار ${escapeHtml(storeName(store))}">`:`<span class="store-logo store-logo-fallback">${escapeHtml(storeName(store).slice(0,1)||'هـ')}</span>`}<div><div class="store-title-row"><h1>${escapeHtml(storeName(store))}</h1><span class="open-pill ${anyShiftOpen()?'open':'closed'}">${anyShiftOpen()?'مفتوح الآن':'مغلق الآن'}</span></div><p>${escapeHtml(address||'المطعم')}</p></div></div>
-      <div class="info-grid client-info-grid">
-        <button class="info-card info-card-button" type="button" data-jump-view="ratings"><span class="info-icon">★</span><span>التقييم</span><strong>${avg.avg?avg.avg.toFixed(1):'0.0'}</strong><small>${avg.count} تقييم</small></button>
-        <div class="info-card"><span class="info-icon">◷</span><span>وقت التوصيل</span><strong>${escapeHtml(deliveryTime)}</strong><small>تقريبي</small></div>
-        <div class="info-card"><span class="info-icon">🛵</span><span>رسوم التوصيل</span><strong>${escapeHtml(deliveryFee)}</strong></div>
-        <button class="info-card info-card-button" type="button" data-jump-view="info"><span class="info-icon">ⓘ</span><span>معلومات المطعم</span><strong>عرض التفاصيل</strong><small>العنوان والهاتف</small></button>
+      <div class="info-grid client-info-grid hours-only-grid">
         <div class="info-card hours-card"><span class="info-icon">◷</span><span>ساعات العمل</span><strong>${escapeHtml(hours)}</strong></div>
       </div>
       ${storeDescription(store)?`<p class="store-description">${escapeHtml(storeDescription(store))}</p>`:''}
@@ -386,7 +379,7 @@ function makeGroups(store,categories,products){
   return unique;
 }
 
-function categoryCardImage(group){ return categoryImage(group.category)||productImage(group.products.find((p)=>productImage(p))||{}); }
+function categoryCardImage(group){ return categoryImage(group.category); }
 
 function renderMenuShell(){
   const store=state.store;
@@ -416,7 +409,7 @@ function renderCategoriesView(){
   const total=state.groups.length, sh=activeShift();
   const shiftNote=shiftMode()===2&&sh?`<div class="shift-note ${sh.is_open?'open':'closed'}">${sh.is_open?`يعرض الآن أقسام ${escapeHtml(text(sh.display_name)||'الشفت الحالي')}.`:`${escapeHtml(text(sh.display_name)||'هذا الشفت')} مغلق الآن، ويمكنك استعراض أقسامه ووجباته.`}</div>`:'';
   host.innerHTML=`${renderShiftSwitcher()}${shiftNote}<div class="search-wrap section-search"><span class="search-icon">⌕</span><input id="categorySearch" type="search" placeholder="ابحث داخل قائمة المطعم..." autocomplete="off"></div>
-    <div class="section-head"><div><h2>أقسام القائمة</h2><p>اختر قسمًا لعرض المنتجات الموجودة داخله فقط</p></div><span>${total} قسم</span></div>
+    <div class="section-head menu-section-head"><div><h2>منيو ${escapeHtml(storeName(state.store))}</h2><p>اختر وجبتك</p></div><span>${total} قسم</span></div>
     <div id="categoriesGrid" class="categories-grid">${total?state.groups.map(renderCategoryCard).join(''):'<div class="empty-products">لا توجد أقسام تحتوي على منتجات في هذا الشفت حاليًا.</div>'}</div>`;
   bindShiftSwitcher();
   host.querySelectorAll('[data-open-category]').forEach((card)=>card.addEventListener('click',()=>openCategory(card.dataset.openCategory)));
