@@ -1078,7 +1078,7 @@ async function renderOrdersPage() {
 const STORE_REVIEW_OPTIONS = [
   ['pending','قيد المراجعة'], ['approved','مقبول'], ['rejected','مرفوض'], ['suspended','معلّق']
 ];
-let storesPageState = { rows:[], filtered:[], reviews:new Map(), owners:new Map(), controls:new Map(), selected:null, section:'restaurants' };
+let storesPageState = { rows:[], filtered:[], reviews:new Map(), owners:new Map(), controls:new Map(), categories:[], selected:null, section:'restaurants' };
 
 function storeReviewLabel(value='pending') {
   const s=String(value||'pending').toLowerCase();
@@ -1160,13 +1160,45 @@ async function saveStoreDisplayOrder(row) {
   applyStoresFilters();
 }
 
+let storeAdminSystemCategories=[];
+function storeCategoryOptionsHtml(row) {
+  const current=String(row?.system_category_id||'');
+  const options=storeAdminSystemCategories.map(c=>{
+    const label=c.name_ar||c.name_ku||c.name_en||c.category_key||'تصنيف';
+    return `<option value="${escapeHtml(String(c.id))}" ${String(c.id)===current?'selected':''}>${escapeHtml(label)}</option>`;
+  }).join('');
+  return `<option value="" ${current?'':'selected'}>— اختر التصنيف الصحيح —</option>${options}`;
+}
+async function saveStoreSystemCategory(row) {
+  const select=document.getElementById('storeSystemCategorySelect');
+  const box=document.getElementById('storeCategoryMessage');
+  const btn=document.getElementById('saveStoreSystemCategory');
+  if(!select||!box||!btn) return;
+  const categoryId=String(select.value||'').trim();
+  if(!categoryId){box.innerHTML='<div class="alert warning">اختر التصنيف الصحيح أولًا.</div>';return;}
+  btn.disabled=true; btn.textContent='جارٍ الحفظ...'; box.innerHTML='';
+  const {data,error}=await supabase.rpc('admin_set_store_system_category_v65',{p_store_id:row.id,p_category_id:categoryId});
+  btn.disabled=false; btn.textContent='حفظ التصنيف';
+  if(error){box.innerHTML=`<div class="alert error">تعذر حفظ التصنيف: ${escapeHtml(error.message)}. شغّل ملف STAGE_65_STORE_CATEGORY_CONTROL.sql مرة واحدة.</div>`;return;}
+  const category=storeAdminSystemCategories.find(c=>String(c.id)===categoryId);
+  row.system_category_id=categoryId;
+  row._category_key=category?.category_key||'';
+  row._category_name_ar=category?.name_ar||'';
+  row._category_name_ku=category?.name_ku||'';
+  row._category_name_en=category?.name_en||'';
+  await systemAudit('update_store_system_category','store',row.id,{system_category_id:categoryId,category_key:row._category_key});
+  box.innerHTML=`<div class="alert success">تم حفظ التصنيف: ${escapeHtml(category?.name_ar||'التصنيف المحدد')}. سيظهر المتجر داخل هذا التصنيف في تطبيق العميل.</div>`;
+  applyStoresFilters();
+}
+
 async function fetchStoresAdmin() {
   try {
     const [storesR,categoriesR]=await Promise.all([
       supabase.from('stores').select('*').limit(5000),
-      supabase.from('system_categories').select('id,category_key,name_ar,name_ku,name_en').limit(5000)
+      supabase.from('system_categories').select('id,category_key,name_ar,name_ku,name_en,is_active,display_status,sort_order').order('sort_order',{ascending:true}).limit(5000)
     ]);
     if (storesR.error) return {ok:false,rows:[],error:storesR.error.message};
+    storeAdminSystemCategories=(categoriesR.data||[]).filter(c=>c?.is_active!==false);
     const categoryMap=new Map((categoriesR.data||[]).map(c=>[String(c.id),c]));
     const rows=(storesR.data||[]).map(row=>{
       const c=categoryMap.get(String(row.system_category_id||''));
@@ -1358,6 +1390,13 @@ function openStoreDetails(row) {
       ${detailItem('الوصف',pick(row,['description','bio','about'],'غير متوفر'))}
     </div>
     <div class="review-editor">
+      <div class="panel-head"><div><span>تطبيق العميل</span><h3>التصنيف الرئيسي للمتجر</h3></div></div>
+      <p class="panel-note">هذا الاختيار هو المرجع الأساسي لظهور المتجر في تطبيق العميل. لا يعتمد التطبيق على تخمين اسم النشاط عند فتح التصنيفات.</p>
+      <label>التصنيف الصحيح<select id="storeSystemCategorySelect">${storeCategoryOptionsHtml(row)}</select></label>
+      <button class="primary-btn compact" id="saveStoreSystemCategory">حفظ التصنيف</button>
+      <div id="storeCategoryMessage"></div>
+    </div>
+    <div class="review-editor">
       <div class="panel-head"><div><span>تطبيق العميل</span><h3>ترتيب ظهور المتجر</h3></div></div>
       <p class="panel-note">الترتيب مستقل داخل القسم الحالي: المطاعم تُرتب مع المطاعم فقط، والمتاجر مع المتاجر فقط. الرقم 1 يظهر أولًا، وبعده 2 ثم 3، وغير المرتب يظهر بعدهم.</p>
       <label>ترتيب الظهور<input id="storeDisplayOrderInput" type="number" min="1" max="9999" step="1" value="${storeDisplayOrder(row)??''}" placeholder="مثال: 1" /></label>
@@ -1399,6 +1438,7 @@ function openStoreDetails(row) {
   document.body.appendChild(overlay);
   const close=()=>overlay.remove(); document.getElementById('closeStoreModal').addEventListener('click',close); overlay.addEventListener('click',e=>{if(e.target===overlay)close();});
   document.getElementById('saveStoreReview').addEventListener('click',()=>saveStoreReview(row));
+  document.getElementById('saveStoreSystemCategory')?.addEventListener('click',()=>saveStoreSystemCategory(row));
   document.getElementById('saveStoreDisplayOrder')?.addEventListener('click',()=>saveStoreDisplayOrder(row));
   wireStoreOperationalActions(row);
 }
@@ -1419,7 +1459,7 @@ async function renderStoresPage() {
   content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل المتاجر...</h2><p>يتم قراءة جدول stores ومراجعات الإدارة من Supabase.</p></section>`;
   const [storesR,lookups]=await Promise.all([fetchStoresAdmin(),loadStoreAdminLookups()]);
   if(!storesR.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">🏪</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة المتاجر</h2><p>${escapeHtml(storesR.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage4_rls.sql</b> ثم أعد المحاولة.</p></section>`;return;}
-  storesPageState={rows:sortStoresByDisplayOrder(storesR.rows),filtered:[],reviews:lookups.reviews,owners:lookups.owners,controls:lookups.controls||new Map(),selected:null,section:'restaurants'};
+  storesPageState={rows:sortStoresByDisplayOrder(storesR.rows),filtered:[],reviews:lookups.reviews,owners:lookups.owners,controls:lookups.controls||new Map(),categories:storeAdminSystemCategories,selected:null,section:'restaurants'};
   const counts={pending:0,approved:0,rejected:0,suspended:0}; storesR.rows.forEach(r=>{const s=reviewForStore(r).review_status||'pending'; if(counts[s]!==undefined)counts[s]++;});
   const restaurantCount=storesR.rows.filter(r=>storeSection(r)==='restaurants').length;
   const storeCount=storesR.rows.filter(r=>storeSection(r)==='stores').length;
@@ -2075,14 +2115,20 @@ function wireSystemOverview(){
 
 function clientCategoryName(r){ return pick(r,['name_ar','name','title'],'تصنيف'); }
 function clientCategoryActive(r){ return systemBool(pick(r,['is_active','active','enabled'],true)); }
+function clientCategoryDisplayStatus(r){
+  const raw=String(r?.display_status||'').trim().toLowerCase();
+  if(['active','coming_soon','hidden'].includes(raw)) return raw;
+  return clientCategoryActive(r)?'active':'hidden';
+}
+function clientCategoryStatusLabel(r){ const st=clientCategoryDisplayStatus(r); return st==='coming_soon'?'قريبًا':(st==='hidden'?'مخفي':'فعال'); }
 function clientCategoryOrder(r){ return Number(pick(r,['sort_order','position','order_index','display_order'],0)||0); }
 function filteredClientCategoryRows(){
   const q=String(systemPageState.clientCategorySearch||'').trim().toLowerCase();
   const st=systemPageState.clientCategoryStatusFilter||'all';
   return systemPageState.clientCategories.filter(r=>{
-    const active=clientCategoryActive(r);
+    const status=clientCategoryDisplayStatus(r);
     const matchQ=!q||[clientCategoryName(r),r.name_ku||'',r.name_en||'',r.icon||''].join(' ').toLowerCase().includes(q);
-    const matchStatus=st==='all'||(st==='active'&&active)||(st==='paused'&&!active);
+    const matchStatus=st==='all'||st===status;
     return matchQ&&matchStatus;
   }).sort((a,b)=>clientCategoryOrder(a)-clientCategoryOrder(b));
 }
@@ -2094,7 +2140,7 @@ function renderClientCategories(){
   const editing=all.find(r=>String(r.id)===String(editingId||''));
   const editorOpen=!!editingId;
   return `<div class="system-section-head"><div><h3>تصنيفات واجهة العميل</h3><p>هذه هي التصنيفات الرئيسية التي تظهر للعميل مثل مطاعم، بقالة، حلويات وصيدليات. التصنيف الفعّال يصبح متاحًا للتطبيق مباشرة من Supabase.</p></div><button type="button" id="newClientCategory" class="primary-btn compact">＋ إضافة تصنيف جديد</button></div>
-  <section class="management-toolbar panel client-category-toolbar"><label class="search-box">🔎<input id="clientCategorySearch" type="search" value="${escapeHtml(systemPageState.clientCategorySearch||'')}" placeholder="ابحث باسم التصنيف..."></label><label>الحالة<select id="clientCategoryStatusFilter"><option value="all" ${systemPageState.clientCategoryStatusFilter==='all'?'selected':''}>كل الحالات</option><option value="active" ${systemPageState.clientCategoryStatusFilter==='active'?'selected':''}>فعال</option><option value="paused" ${systemPageState.clientCategoryStatusFilter==='paused'?'selected':''}>موقوف</option></select></label><button type="button" class="secondary-btn compact" id="resetClientCategoryFilters">إعادة الضبط</button></section>
+  <section class="management-toolbar panel client-category-toolbar"><label class="search-box">🔎<input id="clientCategorySearch" type="search" value="${escapeHtml(systemPageState.clientCategorySearch||'')}" placeholder="ابحث باسم التصنيف..."></label><label>الحالة<select id="clientCategoryStatusFilter"><option value="all" ${systemPageState.clientCategoryStatusFilter==='all'?'selected':''}>كل الحالات</option><option value="active" ${systemPageState.clientCategoryStatusFilter==='active'?'selected':''}>فعال</option><option value="coming_soon" ${systemPageState.clientCategoryStatusFilter==='coming_soon'?'selected':''}>قريبًا</option><option value="hidden" ${systemPageState.clientCategoryStatusFilter==='hidden'?'selected':''}>مخفي</option></select></label><button type="button" class="secondary-btn compact" id="resetClientCategoryFilters">إعادة الضبط</button></section>
   <article class="panel category-editor" id="clientCategoryEditor" ${editorOpen?'':'hidden'}><div class="panel-head"><div><span>${editing?'تعديل التصنيف':'تصنيف جديد'}</span><h3>${editing?'تعديل تصنيف العميل':'إضافة تصنيف جديد'}</h3></div>${editing?'<span class="tag status-pending">وضع التعديل</span>':''}</div><form id="clientCategoryForm" class="category-create-form" autocomplete="off"><div class="settings-form-grid category-form-grid">
   <div class="category-field"><label for="clientCategoryNameAr">الاسم بالعربية <span class="required-mark">*</span></label><input id="clientCategoryNameAr" type="text" required value="${escapeHtml(editing?clientCategoryName(editing):'')}" placeholder="مثال: مطاعم"></div>
   <div class="category-field"><label for="clientCategoryNameKu">الاسم بالكردية</label><input id="clientCategoryNameKu" type="text" value="${escapeHtml(editing?.name_ku||'')}" placeholder="اختياري"></div>
@@ -2103,9 +2149,9 @@ function renderClientCategories(){
   <div class="category-field category-image-field"><label>صورة التصنيف</label><div class="category-image-upload-row"><input id="clientCategoryImageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button type="button" id="uploadClientCategoryImage" class="secondary-btn compact">⬆ رفع صورة</button></div><input id="clientCategoryImage" type="url" value="${escapeHtml(editing?.image_url||'')}" placeholder="يُملأ الرابط تلقائيًا بعد رفع الصورة"><small class="field-hint">اختر الصورة من الجهاز، وسيتم رفعها إلى Supabase Storage وحفظ الرابط تلقائيًا.</small>${editing?.image_url?`<div class="category-image-preview"><img src="${escapeHtml(editing.image_url)}" alt="صورة التصنيف"></div>`:''}</div>
   <div class="category-field"><label for="clientCategoryColor">اللون</label><input id="clientCategoryColor" type="text" value="${escapeHtml(editing?.color_hex||'#FF7A00')}" placeholder="#FF7A00"></div>
   <div class="category-field"><label for="clientCategoryOrder">الترتيب</label><input id="clientCategoryOrder" type="number" min="1" step="1" value="${escapeHtml(String(editing?clientCategoryOrder(editing):all.length+1))}"></div>
-  <label class="check-label"><input id="clientCategoryActive" type="checkbox" ${editing?clientCategoryActive(editing)?'checked':'':'checked'}> فعال ويظهر للعميل</label></div>
+  <div class="category-field"><label for="clientCategoryDisplayStatus">حالة الظهور</label><select id="clientCategoryDisplayStatus"><option value="active" ${!editing||clientCategoryDisplayStatus(editing)==='active'?'selected':''}>فعال</option><option value="coming_soon" ${editing&&clientCategoryDisplayStatus(editing)==='coming_soon'?'selected':''}>قريبًا — يظهر وغير قابل للدخول</option><option value="hidden" ${editing&&clientCategoryDisplayStatus(editing)==='hidden'?'selected':''}>مخفي</option></select></div></div>
   <div class="category-actions"><button id="saveClientCategory" type="submit" class="primary-btn compact">${editing?'✓ حفظ التعديل':'＋ حفظ التصنيف'}</button><button id="cancelClientCategory" type="button" class="secondary-btn compact">إلغاء</button><span id="clientCategoryMessage" class="panel-note" aria-live="polite"></span></div></form></article>
-  <div class="table-wrap"><table class="data-table"><thead><tr><th>التصنيف</th><th>الصورة</th><th>الترجمة</th><th>الأيقونة</th><th>الحالة</th><th>الترتيب</th><th>الإجراءات</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td><strong>${escapeHtml(clientCategoryName(r))}</strong><br><small class="muted-cell">ID ثابت: ${escapeHtml(String(r.id).slice(0,8))}…</small></td><td>${r.image_url?`<img src="${escapeHtml(r.image_url)}?admin_preview=${Date.now()}" alt="صورة ${escapeHtml(clientCategoryName(r))}" style="width:52px;height:52px;object-fit:cover;border-radius:14px;border:1px solid var(--border-color);">`:'—'}</td><td><small>${escapeHtml(r.name_ku||'—')} / ${escapeHtml(r.name_en||'—')}</small></td><td>${escapeHtml(r.icon||'—')}</td><td><span class="status-chip ${clientCategoryActive(r)?'status-ready':'status-cancelled'}">${clientCategoryActive(r)?'فعال':'موقوف'}</span></td><td>${clientCategoryOrder(r)}</td><td><div class="inline-actions wrap-actions"><button class="primary-btn tiny" data-client-category-edit="${escapeHtml(String(r.id))}">✏ تعديل</button><button class="secondary-btn tiny" data-client-category-toggle="${escapeHtml(String(r.id))}" data-active="${clientCategoryActive(r)?'1':'0'}">${clientCategoryActive(r)?'إيقاف':'تفعيل'}</button><button class="danger-btn tiny" data-client-category-delete="${escapeHtml(String(r.id))}">حذف</button></div></td></tr>`).join(''):`<tr><td colspan="7" class="muted-cell">لا توجد تصنيفات بعد. اضغط «إضافة تصنيف جديد».</td></tr>`}</tbody></table></div>`;
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>التصنيف</th><th>الصورة</th><th>الترجمة</th><th>الأيقونة</th><th>الحالة</th><th>الترتيب</th><th>الإجراءات</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td><strong>${escapeHtml(clientCategoryName(r))}</strong><br><small class="muted-cell">ID ثابت: ${escapeHtml(String(r.id).slice(0,8))}…</small></td><td>${r.image_url?`<img src="${escapeHtml(r.image_url)}?admin_preview=${Date.now()}" alt="صورة ${escapeHtml(clientCategoryName(r))}" style="width:52px;height:52px;object-fit:cover;border-radius:14px;border:1px solid var(--border-color);">`:'—'}</td><td><small>${escapeHtml(r.name_ku||'—')} / ${escapeHtml(r.name_en||'—')}</small></td><td>${escapeHtml(r.icon||'—')}</td><td><span class="status-chip ${clientCategoryDisplayStatus(r)==='active'?'status-ready':(clientCategoryDisplayStatus(r)==='coming_soon'?'status-pending':'status-cancelled')}">${clientCategoryStatusLabel(r)}</span></td><td>${clientCategoryOrder(r)}</td><td><div class="inline-actions wrap-actions"><button class="primary-btn tiny" data-client-category-edit="${escapeHtml(String(r.id))}">✏ تعديل</button><button class="danger-btn tiny" data-client-category-delete="${escapeHtml(String(r.id))}">حذف</button></div></td></tr>`).join(''):`<tr><td colspan="7" class="muted-cell">لا توجد تصنيفات بعد. اضغط «إضافة تصنيف جديد».</td></tr>`}</tbody></table></div>`;
 }
 function openNewClientCategory(){ systemPageState.editingClientCategoryId='__new__'; renderSystemTab(); setTimeout(()=>document.getElementById('clientCategoryNameAr')?.focus(),30); }
 
@@ -2175,12 +2221,23 @@ async function saveClientCategory(){
   const msg=document.getElementById('clientCategoryMessage');
   const nameAr=document.getElementById('clientCategoryNameAr')?.value.trim()||'';
   if(!nameAr){if(msg)msg.textContent='اكتب اسم التصنيف بالعربية.';return;}
-  const args={p_name_ar:nameAr,p_name_ku:document.getElementById('clientCategoryNameKu')?.value.trim()||null,p_name_en:document.getElementById('clientCategoryNameEn')?.value.trim()||null,p_icon:document.getElementById('clientCategoryIcon')?.value.trim()||null,p_image_url:document.getElementById('clientCategoryImage')?.value.trim()||null,p_color_hex:document.getElementById('clientCategoryColor')?.value.trim()||'#FF7A00',p_sort_order:Math.max(1,Number(document.getElementById('clientCategoryOrder')?.value||1)),p_is_active:!!document.getElementById('clientCategoryActive')?.checked};
-  if(msg)msg.textContent='جارٍ الحفظ...';
   const editId=systemPageState.editingClientCategoryId;
-  const req=editId&&editId!=='__new__'?supabase.rpc('admin_update_system_category',{p_id:editId,...args}):supabase.rpc('admin_create_system_category',args);
-  const {error}=await req;if(error){if(msg)msg.textContent='تعذر الحفظ: '+error.message;return;}
-  await systemAudit(editId&&editId!=='__new__'?'edit_client_category':'create_client_category','system_category',editId||nameAr,{name_ar:nameAr,is_active:args.p_is_active,sort_order:args.p_sort_order});
+  const status=document.getElementById('clientCategoryDisplayStatus')?.value||'active';
+  const args={
+    p_id:editId&&editId!=='__new__'?editId:null,
+    p_name_ar:nameAr,
+    p_name_ku:document.getElementById('clientCategoryNameKu')?.value.trim()||null,
+    p_name_en:document.getElementById('clientCategoryNameEn')?.value.trim()||null,
+    p_icon:document.getElementById('clientCategoryIcon')?.value.trim()||null,
+    p_image_url:document.getElementById('clientCategoryImage')?.value.trim()||null,
+    p_color_hex:document.getElementById('clientCategoryColor')?.value.trim()||'#FF7A00',
+    p_sort_order:Math.max(1,Number(document.getElementById('clientCategoryOrder')?.value||1)),
+    p_display_status:status
+  };
+  if(msg)msg.textContent='جارٍ الحفظ...';
+  const {data,error}=await supabase.rpc('admin_save_system_category_v66',args);
+  if(error){if(msg)msg.textContent='تعذر الحفظ: '+error.message;return;}
+  await systemAudit(editId&&editId!=='__new__'?'edit_client_category':'create_client_category','system_category',data||editId||nameAr,{name_ar:nameAr,display_status:status,sort_order:args.p_sort_order});
   systemPageState.editingClientCategoryId=null;await loadSystemData();renderSystemTab();
 }
 async function toggleClientCategory(id,current){const {error}=await supabase.rpc('admin_set_system_category_active',{p_id:id,p_is_active:!current});if(error){alert('تعذر تحديث التصنيف: '+error.message);return;}await loadSystemData();renderSystemTab();}
@@ -2194,7 +2251,6 @@ function wireClientCategories(){
   document.getElementById('clientCategoryStatusFilter')?.addEventListener('change',e=>{systemPageState.clientCategoryStatusFilter=e.target.value;renderSystemTab();});
   document.getElementById('resetClientCategoryFilters')?.addEventListener('click',()=>{systemPageState.clientCategorySearch='';systemPageState.clientCategoryStatusFilter='all';renderSystemTab();});
   document.querySelectorAll('[data-client-category-edit]').forEach(b=>b.addEventListener('click',()=>{systemPageState.editingClientCategoryId=b.dataset.clientCategoryEdit;renderSystemTab();setTimeout(()=>{document.getElementById('clientCategoryEditor')?.scrollIntoView({behavior:'smooth',block:'start'});document.getElementById('clientCategoryNameAr')?.focus();},40);}));
-  document.querySelectorAll('[data-client-category-toggle]').forEach(b=>b.addEventListener('click',()=>toggleClientCategory(b.dataset.clientCategoryToggle,b.dataset.active==='1')));
   document.querySelectorAll('[data-client-category-delete]').forEach(b=>b.addEventListener('click',()=>deleteClientCategory(b.dataset.clientCategoryDelete)));
 }
 
@@ -2209,7 +2265,7 @@ function filteredCategoryRows(){
     const active=systemCategoryActive(r);
     const matchQ=!q||[systemCategoryName(r),systemStoreName(r.store_id)].join(' ').toLowerCase().includes(q);
     const matchStore=sf==='all'||String(r.store_id)===String(sf);
-    const matchStatus=st==='all'||(st==='active'&&active)||(st==='paused'&&!active);
+    const matchStatus=st==='all'||st===status;
     return matchQ&&matchStore&&matchStatus;
   });
 }
