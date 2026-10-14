@@ -2003,8 +2003,8 @@ let systemSupportRealtimeStatus = 'idle';
 
 const systemPageState = {
   tab: 'overview',
-  categories: [], clientCategories: [], coupons: [], platformCoupons: [], couponSettlements: [], promotions: [], platformOffers: [], support: [], partnerSupport: [], pinResets: [], commissions: [], subscriptions: [], settings: [], audit: [], stores: [],
-  categoryTable: null, clientCategoryTable: null, couponTable: null, platformCouponTable: null, promotionTable: null, supportTable: null, partnerSupportTable: null, pinResetTable: null,
+  categories: [], clientCategories: [], coupons: [], platformCoupons: [], couponSettlements: [], promotions: [], platformOffers: [], support: [], partnerSupport: [], pinResets: [], phoneVerifications: [], commissions: [], subscriptions: [], settings: [], audit: [], stores: [],
+  categoryTable: null, clientCategoryTable: null, couponTable: null, platformCouponTable: null, promotionTable: null, supportTable: null, partnerSupportTable: null, pinResetTable: null, phoneVerificationTable: null,
   offerFilter: 'all', offerSearch: '', editingPlatformCouponId:null, editingPlatformOfferId:null, settlementFilter:'all', settlementSearch:'',
   categorySearch:'', categoryStoreFilter:'all', categoryStatusFilter:'all', editingCategoryId:null,
   clientCategorySearch:'', clientCategoryStatusFilter:'all', editingClientCategoryId:null,
@@ -2013,7 +2013,7 @@ const systemPageState = {
 };
 const SYSTEM_TABS = [
   ['overview','نظرة عامة'], ['client-categories','تصنيفات العميل'], ['categories','أقسام منتجات المتاجر'], ['offers','الكوبونات والعروض'],
-  ['finance','العمولات والاشتراكات'], ['pin-customers','استرجاع PIN العملاء'], ['pin-partners','استرجاع PIN الشركاء'], ['support','الدعم'], ['settings','إعدادات النظام'], ['audit','سجل العمليات']
+  ['finance','العمولات والاشتراكات'], ['pin-customers','استرجاع PIN العملاء'], ['phone-verification','تأكيد أرقام العملاء'], ['pin-partners','استرجاع PIN الشركاء'], ['support','الدعم'], ['settings','إعدادات النظام'], ['audit','سجل العمليات']
 ];
 async function systemSafeRows(table, limit=5000) {
   try {
@@ -2029,7 +2029,7 @@ async function systemFirstRows(list) {
   return { ok:false, rows:[], table:null };
 }
 async function loadSystemData() {
-  const [categories, clientCategories, coupons, platformCoupons, couponSettlements, promotions, support, partnerSupport, pinResets, commissions, subscriptions, settings, audit, stores] = await Promise.all([
+  const [categories, clientCategories, coupons, platformCoupons, couponSettlements, promotions, support, partnerSupport, pinResets, phoneVerifications, commissions, subscriptions, settings, audit, stores] = await Promise.all([
     systemFirstRows(['product_categories','store_categories']),
     systemFirstRows(['system_categories']),
     systemFirstRows(['coupons']),
@@ -2039,6 +2039,7 @@ async function loadSystemData() {
     systemFirstRows(['customer_support_conversations','support_tickets']),
     systemFirstRows(['partner_support_tickets']),
     systemFirstRows(['phone_pin_reset_requests']),
+    systemFirstRows(['customer_phone_verification_requests']),
     systemSafeRows('admin_commission_rules'),
     systemSafeRows('admin_subscriptions'),
     systemSafeRows('admin_system_settings'),
@@ -2056,6 +2057,7 @@ async function loadSystemData() {
     support:support.rows, supportTable:support.table,
     partnerSupport:partnerSupport.rows, partnerSupportTable:partnerSupport.table,
     pinResets:pinResets.rows, pinResetTable:pinResets.table,
+    phoneVerifications:phoneVerifications.rows, phoneVerificationTable:phoneVerifications.table,
     commissions:commissions.rows, subscriptions:subscriptions.rows,
     settings:settings.rows, audit:audit.rows, stores:stores.rows,
   });
@@ -2951,6 +2953,36 @@ function renderSystemAudit() {
   const rows=[...systemPageState.audit].sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0)).slice(0,100);
   return `${storeWarning}<div class="system-section-head"><div><h3>سجل العمليات</h3><p>آخر العمليات الإدارية بتسميات عربية واضحة.</p></div><span class="tag">${fmtNumber(rows.length)} عملية</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>العملية</th><th>النوع</th><th>المعرف</th><th>الوقت</th></tr></thead><tbody>${rows.length ? rows.map((r)=>`<tr><td><strong>${escapeHtml(auditActionLabel(r.action))}</strong></td><td>${escapeHtml(auditEntityLabel(r.entity_type))}</td><td>${escapeHtml(systemShort(r.entity_id))}</td><td>${fmtDate(r.created_at)}</td></tr>`).join('') : `<tr><td colspan="4" class="muted-cell">لا توجد عمليات مسجلة بعد.</td></tr>`}</tbody></table></div>`;
 }
+
+// Phone verification is separate from PIN recovery: distinct requests, codes and RPCs.
+function renderCustomerPhoneVerifications(){
+  if(!systemPageState.phoneVerificationTable) return '<div class="inline-alert warning">جدول تأكيد الأرقام غير متاح. SQL التحديث لم ينفذ بعد.</div>';
+  const rows=[...systemPageState.phoneVerifications].sort((a,b)=>new Date(b.requested_at||0)-new Date(a.requested_at||0));
+  return `<section class="pin-recovery-hero"><div><span class="pill">حماية الحسابات</span><h3>تأكيد أرقام العملاء</h3><p>الرمز خاص بتأكيد الهاتف ولا يصلح لاسترجاع PIN. تأكد من صاحب الرقم قبل الإرسال.</p></div><span class="tag">${rows.filter(r=>['pending','issued'].includes(r.status)).length} طلب مفتوح</span></section><div class="table-wrap"><table class="data-table"><thead><tr><th>الهاتف</th><th>الحالة</th><th>الطلب</th><th>الإجراء</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td dir="ltr">${escapeHtml(r.phone_e164||'—')}</td><td>${escapeHtml(pinResetStatusLabel(r.status))}</td><td>${fmtDate(r.requested_at)}</td><td>${['pending','issued'].includes(r.status)?`<button class="primary-btn tiny" data-phone-verify-issue="${escapeHtml(String(r.id))}">إصدار رمز واتساب</button>`:'—'}</td></tr>`).join(''):'<tr><td colspan="4">لا توجد طلبات حالياً.</td></tr>'}</tbody></table></div>`;
+}
+async function issueCustomerPhoneVerification(requestId){
+  const request=systemPageState.phoneVerifications.find(r=>String(r.id)===String(requestId));
+  if(!request) throw Error('الطلب غير موجود');
+  const {data,error}=await supabase.rpc('admin_issue_customer_phone_verification_code',{p_request_id:requestId});
+  if(error) throw Error(error.message);
+  const row=Array.isArray(data)?data[0]:data;
+  if(!row?.verification_code) throw Error('الخادم لم يرجع الرمز');
+  const code=String(row.verification_code),phone=String(request.phone_e164||'');
+  const message=`رمز تأكيد رقم الهاتف في هلا طلب: ${code}\nصلاحية الرمز 15 دقيقة. لا تشارك الرمز مع أي شخص.`;
+  const overlay=document.createElement('div');overlay.className='modal-overlay';
+  overlay.innerHTML=`<section class="modal-card small-modal pin-code-modal"><div class="modal-head"><h3>تأكيد رقم الهاتف — <span dir="ltr">${escapeHtml(code)}</span></h3><button class="icon-btn" id="phoneVerifyClose">×</button></div><p>${escapeHtml(phone)}</p><p>${escapeHtml(message)}</p><div class="inline-actions"><button class="primary-btn" id="phoneVerifyWhatsApp">💬 إرسال عبر واتساب</button><button class="secondary-btn" id="phoneVerifyCopy">نسخ الرمز</button></div></section>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#phoneVerifyClose').onclick=()=>overlay.remove();
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove();});
+  overlay.querySelector('#phoneVerifyWhatsApp').onclick=()=>{const n=normalizePhoneForWhatsApp(phone);if(!n)return alert('رقم غير صالح');window.open(`https://wa.me/${n}?text=${encodeURIComponent(message)}`,'_blank','noopener,noreferrer');};
+  overlay.querySelector('#phoneVerifyCopy').onclick=()=>navigator.clipboard.writeText(code).catch(()=>alert(code));
+}
+function wireCustomerPhoneVerifications(){
+  document.querySelectorAll('[data-phone-verify-issue]').forEach(b=>b.addEventListener('click',async()=>{
+    b.disabled=true;try{await issueCustomerPhoneVerification(b.dataset.phoneVerifyIssue);await loadSystemData();renderSystemTab();}catch(e){alert('تعذر إصدار الرمز: '+e.message);}finally{b.disabled=false;}
+  }));
+}
+
 function renderSystemTab() {
   const host=document.getElementById('systemTabContent'); if (!host) return;
   const tab=systemPageState.tab;
@@ -2959,6 +2991,7 @@ function renderSystemTab() {
   else if (tab==='offers') { host.innerHTML=renderSystemOffers(); wireSystemOffers(); }
   else if (tab==='finance') { host.innerHTML=renderSystemFinance(); wireSystemFinance(); }
   else if (tab==='pin-customers') { host.innerHTML=renderPinResetRequests('customer'); wirePinRecovery('customer'); }
+  else if (tab==='phone-verification') { host.innerHTML=renderCustomerPhoneVerifications(); wireCustomerPhoneVerifications(); }
   else if (tab==='pin-partners') { host.innerHTML=renderPinResetRequests('partners'); wirePinRecovery('partners'); }
   else if (tab==='support') { host.innerHTML=renderSystemSupport(); wireSystemSupport(); }
   else if (tab==='settings') { host.innerHTML=renderSystemSettings(); wireSystemSettingsActions(); }

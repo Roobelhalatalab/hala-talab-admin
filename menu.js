@@ -160,6 +160,23 @@ async function allReadableTables(candidates, options = {}) {
   return { ok: tables.length > 0, table: tables[0] || null, tables, rows, errors };
 }
 
+// Public QR menu is deliberately limited to three restaurants.
+// This controls the public menu only; it does not change stores, orders,
+// categories, products, or merchant access in Supabase.
+function menuRestaurantAllowed(store) {
+  const name = storeName(store).normalize('NFKC')
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/[\u0640\s_-]+/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .toLowerCase();
+  return name === 'مطعمقلبالمدينة' || name === 'قلبالمدينة'
+    || name === 'مطعمماركو' || name === 'ماركو'
+    || name === 'مطعمtendy' || name === 'tendy'
+    || name === 'مطعميندي' || name === 'تيندي'
+    || name === 'مطعم تيندي'.replace(/\s/g,'');
+}
+
 function storeVisible(row) {
   const status = text(pick(row,['status','review_status','approval_status'],'')).toLowerCase();
   const active = boolValue(pick(row,['is_active','active','enabled'],true),true);
@@ -216,8 +233,8 @@ function renderState(title,message,actionHtml='') { content.innerHTML=`<section 
 
 function renderStorePicker(stores) {
   document.title='اختر المطعم | هلا طلب'; shareButton.hidden=true; copyButton.hidden=true; qrButton.hidden=true;
-  const visible=stores.filter(storeVisible).sort((a,b)=>storeName(a).localeCompare(storeName(b),'ar'));
-  content.innerHTML=`<section class="store-picker-head"><h1>المنيو الإلكتروني</h1><p>اختر المطعم لعرض أقسام قائمته.</p></section>${!publicLinkReady()?'<div class="local-link-notice">وضع الفحص المحلي: الروابط تعمل على هذا الجهاز فقط.</div>':''}${visible.length?`<div class="stores-grid">${visible.map((store)=>{const logo=storeLogo(store),url=storeMenuUrl(store);return `<article class="store-card-wrap"><a class="store-card" href="${escapeHtml(url)}">${logo?`<img src="${escapeHtml(logo)}" alt="${escapeHtml(storeName(store))}" loading="lazy">`:`<span class="store-card-logo">${escapeHtml(storeName(store).slice(0,1)||'هـ')}</span>`}<span class="store-card-text"><h3>${escapeHtml(storeName(store))}</h3><p>${escapeHtml(storeAddress(store)||'عرض المنيو')}</p></span></a><div class="store-card-tools"><button type="button" class="mini-action" data-copy-store="${escapeHtml(url)}">نسخ الرابط</button><button type="button" class="mini-action qr-action" data-qr-store="${escapeHtml(rowId(store))}">QR</button></div></article>`;}).join('')}</div>`:'<div class="empty-products">لا توجد متاجر متاحة للعرض حاليًا.</div>'}`;
+  const visible=stores.filter((store)=>storeVisible(store)&&menuRestaurantAllowed(store)).sort((a,b)=>storeName(a).localeCompare(storeName(b),'ar'));
+  content.innerHTML=`<section class="store-picker-head"><h1>المنيو الإلكتروني</h1><p>اختر المطعم لعرض أقسام قائمته.</p></section>${!publicLinkReady()?'<div class="local-link-notice">وضع الفحص المحلي: الروابط تعمل على هذا الجهاز فقط.</div>':''}${visible.length?`<div class="stores-grid">${visible.map((store)=>{const logo=storeLogo(store),url=storeMenuUrl(store);return `<article class="store-card-wrap"><a class="store-card" href="${escapeHtml(url)}">${logo?`<img src="${escapeHtml(logo)}" alt="${escapeHtml(storeName(store))}" loading="lazy" decoding="async">`:`<span class="store-card-logo">${escapeHtml(storeName(store).slice(0,1)||'هـ')}</span>`}<span class="store-card-text"><h3>${escapeHtml(storeName(store))}</h3><p>${escapeHtml(storeAddress(store)||'عرض المنيو')}</p></span></a><div class="store-card-tools"><button type="button" class="mini-action" data-copy-store="${escapeHtml(url)}">نسخ الرابط</button><button type="button" class="mini-action qr-action" data-qr-store="${escapeHtml(rowId(store))}">QR</button></div></article>`;}).join('')}</div>`:'<div class="empty-products">لا توجد متاجر متاحة للعرض حاليًا.</div>'}`;
   content.querySelectorAll('[data-copy-store]').forEach((btn)=>btn.addEventListener('click',async()=>{const ok=await copyText(btn.dataset.copyStore);const old=btn.textContent;btn.textContent=ok?'تم النسخ':'تعذر النسخ';setTimeout(()=>btn.textContent=old,1400);}));
   content.querySelectorAll('[data-qr-store]').forEach((btn)=>btn.addEventListener('click',()=>{const store=visible.find((s)=>rowId(s)===btn.dataset.qrStore);if(store)showQr(store);}));
 }
@@ -272,10 +289,12 @@ function chooseDefaultShift(){
   state.activeShiftId=String((open||list[0]||{}).id||'')||null;
 }
 function categoryShiftIds(category){
-  const direct=text(pick(category,['shift_id'],'')||'');
-  if(direct)return [direct];
   const cid=rowId(category); if(!cid)return [];
-  return (state.shiftContext?.category_assignments||[]).filter((x)=>String(x.category_id)===String(cid)).map((x)=>String(x.shift_id));
+  const explicit=(state.shiftContext?.category_assignments||[]).filter((x)=>String(x.category_id)===String(cid)).map((x)=>String(x.shift_id));
+  // Multi-shift assignments take precedence over the legacy single shift_id.
+  if(explicit.length)return explicit;
+  const legacy=text(pick(category,['shift_id'],'')||'');
+  return legacy?[legacy]:[];
 }
 function productShiftIds(product){
   const pid=rowId(product); if(!pid)return [];
@@ -359,11 +378,25 @@ function makeGroups(store,categories,products){
   }
 
   const fallback=new Map();
+  // A product referencing an existing but inactive/other-shift category must
+  // never reappear under a synthetic category. Preserve fallback only for
+  // genuinely orphaned legacy category IDs/names.
+  const knownCategoriesById=new Map(categories.filter((c)=>matchesStore(c,store)).map((c)=>[rowId(c),c]));
+  const knownCategoriesByName=new Map();
+  for(const c of categories.filter((c)=>matchesStore(c,store))){
+    const name=normalized(categoryName(c));
+    if(name){
+      if(!knownCategoriesByName.has(name))knownCategoriesByName.set(name,[]);
+      knownCategoriesByName.get(name).push(c);
+    }
+  }
   for (const p of storeProducts) {
     const keyId=productCategoryId(p), keyName=productCategoryName(p);
     const productKey=rowId(p)||`${productName(p)}-${productPrice(p)}`;
     if(usedProducts.has(productKey)) continue;
     if(!keyId&&!keyName) continue;
+    if(keyId && knownCategoriesById.has(String(keyId))) continue;
+    if(!keyId && keyName && knownCategoriesByName.has(normalized(keyName))) continue;
     const key=keyId?`id:${keyId}`:`name:${normalized(keyName)}`;
     if(!fallback.has(key)) fallback.set(key,{category:{id:keyId||`virtual-${fallback.size+1}`,name:keyName||'قسم',is_active:true,__virtual:true},products:[]});
     fallback.get(key).products.push(p);
@@ -419,7 +452,7 @@ function renderCategoriesView(){
 function renderCategoryCard(group){
   const id=rowId(group.category),img=categoryCardImage(group),search=`${categoryName(group.category)} ${group.products.map(productName).join(' ')}`.toLowerCase();
   return `<button class="category-card" type="button" data-open-category="${escapeHtml(id)}" data-category-search="${escapeHtml(search)}">
-    <div class="category-card-media ${img?'':'no-image'}">${img?`<img src="${escapeHtml(img)}" alt="${escapeHtml(categoryName(group.category))}" loading="lazy">`:'🍽️'}</div>
+    <div class="category-card-media ${img?'':'no-image'}">${img?`<img src="${escapeHtml(img)}" alt="${escapeHtml(categoryName(group.category))}" loading="lazy" decoding="async">`:'🍽️'}</div>
     <div class="category-card-body"><div><h3>${escapeHtml(categoryName(group.category))}</h3><p>${group.products.length} منتج</p></div><span class="category-arrow">‹</span></div>
   </button>`;
 }
@@ -442,7 +475,7 @@ function productRatingsFor(product){ const id=rowId(product); return state.produ
 function renderProduct(product){
   const image=productImage(product),available=productAvailable(product),name=productName(product),avg=ratingAverage(productRatingsFor(product));
   return `<article class="product-card" data-product-card data-search="${escapeHtml(`${name} ${productDescription(product)}`.toLowerCase())}">
-    <div class="product-media ${image?'':'no-image'}">${image?`<img src="${escapeHtml(image)}" alt="${escapeHtml(name)}" loading="lazy">`:'🍽️'}${available?'':`<span class="availability-badge off">غير متوفر</span>`}</div>
+    <div class="product-media ${image?'':'no-image'}">${image?`<img src="${escapeHtml(image)}" alt="${escapeHtml(name)}" loading="lazy" decoding="async">`:'🍽️'}${available?'':`<span class="availability-badge off">غير متوفر</span>`}</div>
     <div class="product-body"><div class="product-head"><h3>${escapeHtml(name)}</h3><strong class="product-price">${money(productPrice(product))}</strong></div>${productDescription(product)?`<p class="product-desc">${escapeHtml(productDescription(product))}</p>`:''}<div class="product-rating-row"><span>${starsText(avg.avg)} <small>(${avg.count})</small></span><button type="button" class="rate-link" data-rate-product="${escapeHtml(rowId(product))}">قيّم الوجبة</button></div></div>
   </article>`;
 }
@@ -524,20 +557,59 @@ async function loadPublicMenu(){
   if(!requestedStore){renderStorePicker(storesResult.rows);return {storesTable:storesResult.table,categoryTable:null,productTable:null};}
   const store=findStore(storesResult.rows,requestedStore);
   if(!store){renderState('المطعم غير موجود','الرابط غير صحيح أو أن المطعم لم يعد متاحًا.',`<p style="margin-top:16px"><a class="primary-btn" href="./menu.html" style="display:inline-block;text-decoration:none">عرض المطاعم</a></p>`);return null;}
+  if(!menuRestaurantAllowed(store)) { renderState('المنيو غير متاح', 'المنيو الإلكتروني متاح حاليًا لثلاثة مطاعم فقط.'); return null; }
   const [categoryResult,productResult]=await Promise.all([allReadableTables(TABLES.categories,{limit:5000}),firstReadableTable(TABLES.products,{limit:10000})]);
   if(!productResult.ok){renderState('تعذر قراءة المنتجات','جدول المنتجات غير متاح للقراءة العامة حاليًا.');return null;}
   await renderMenu(store,categoryResult.rows||[],productResult.rows||[]);
   return {storesTable:storesResult.table,categoryTable:categoryResult.table,categoryTables:categoryResult.tables||[],productTable:productResult.table};
 }
-function scheduleRealtimeReload(){clearTimeout(reloadTimer);reloadTimer=setTimeout(()=>loadPublicMenu().catch(console.error),500);}
+// Batch bursts of database events so one product update does not trigger
+// multiple full menu downloads. Realtime keeps content fresh without polling.
+let menuReloadInFlight = false;
+let menuReloadQueued = false;
+async function reloadMenuOnce(){
+  if (menuReloadInFlight) { menuReloadQueued = true; return; }
+  menuReloadInFlight = true;
+  try { await loadPublicMenu(); }
+  catch(error) { console.error('Menu refresh failed:', error); }
+  finally {
+    menuReloadInFlight = false;
+    if (menuReloadQueued) { menuReloadQueued = false; scheduleRealtimeReload(); }
+  }
+}
+function scheduleRealtimeReload(){
+  clearTimeout(reloadTimer);
+  reloadTimer=setTimeout(reloadMenuOnce,1800);
+}
 function enableRealtime(tables){if(!requestedStore||!tables||!supabase)return;const unique=[...new Set([tables.storesTable,...(tables.categoryTables||[]),tables.categoryTable,tables.productTable,'store_shifts','store_category_shifts','store_product_shifts'].filter(Boolean))];if(!unique.length)return;try{if(realtimeChannel)supabase.removeChannel(realtimeChannel);let channel=supabase.channel(`public-menu-${requestedStore}-${Date.now()}`);unique.forEach((table)=>{channel=channel.on('postgres_changes',{event:'*',schema:'public',table},scheduleRealtimeReload);});realtimeChannel=channel.subscribe();}catch(error){console.warn('Realtime unavailable:',error);}}
 let minuteRefresh=null;
 async function init(){
   const tables=await loadPublicMenu();
   enableRealtime(tables);
-  // Keep shift open/closed state current even if shift tables are not exposed to public Realtime.
+  // The old code fetched ALL stores, categories and products every minute,
+  // even while the visitor was only reading a menu. Shift state is refreshed
+  // via the small context RPC instead; content changes use Realtime above.
   if(minuteRefresh)clearInterval(minuteRefresh);
-  minuteRefresh=setInterval(()=>loadPublicMenu().catch(console.error),60000);
+  if(requestedStore) minuteRefresh=setInterval(async()=>{
+    if(document.hidden || !state.store) return;
+    const next=await loadShiftContext(state.store);
+    const before=JSON.stringify(state.shiftContext);
+    if(before===JSON.stringify(next))return;
+    state.shiftContext=next;
+    // Keep currently selected shift and open category when possible.
+    if(shiftMode()!==2)state.activeShiftId=null;
+    else if(!shifts().some((sh)=>String(sh.id)===String(state.activeShiftId)))chooseDefaultShift();
+    state.groups=makeGroups(state.store,state.categories,state.products);
+    const hero=content.querySelector('.client-style-hero');
+    if(hero)hero.outerHTML=renderHero(state.store);
+    if(state.activeView==='menu'){
+      if(state.activeCategory){
+        const cid=state.activeCategory;
+        if(state.groups.some((g)=>rowId(g.category)===String(cid)))openCategory(cid);
+        else {state.activeCategory=null;renderCategoriesView();}
+      }else renderCategoriesView();
+    }
+  },60000);
 }
 
 bindQrDialog();bindRatingDialog();
