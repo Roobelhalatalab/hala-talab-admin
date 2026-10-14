@@ -322,6 +322,7 @@ function consumePushDeepLinkFromUrl() {
     const targets = {
       'pin-customers': { page:'system', systemTab:'pin-customers', type:'pin_reset' },
       'pin-partners': { page:'system', systemTab:'pin-partners', type:'pin_reset' },
+      'phone-verification': { page:'system', systemTab:'phone-verification', type:'phone_verification' },
       'stores': { page:'stores', systemTab:null, type:'store_review' },
       'drivers': { page:'drivers', systemTab:null, type:'driver_review' },
     };
@@ -581,8 +582,8 @@ function withinDays(value, days=7) {
   return (Date.now()-t) <= days*24*60*60*1000;
 }
 async function loadAdminNotifications() {
-  const [ordersR, storesR, storeReviewsR, profilesR, driverReviewsR, supportR, supportMessagesR, partnerSupportR, partnerSupportMessagesR, pinResetR, usersR] = await Promise.all([
-    safeRows('orders'), safeRows('stores'), safeRows('admin_store_reviews'), safeRows('partner_profiles'), safeRows('admin_driver_reviews'), safeRows('customer_support_conversations'), safeRows('customer_support_messages'), safeRows('partner_support_tickets'), safeRows('partner_support_messages'), safeRows('phone_pin_reset_requests'), safeAdminUsers()
+  const [ordersR, storesR, storeReviewsR, profilesR, driverReviewsR, supportR, supportMessagesR, partnerSupportR, partnerSupportMessagesR, pinResetR, phoneVerificationR, usersR] = await Promise.all([
+    safeRows('orders'), safeRows('stores'), safeRows('admin_store_reviews'), safeRows('partner_profiles'), safeRows('admin_driver_reviews'), safeRows('customer_support_conversations'), safeRows('customer_support_messages'), safeRows('partner_support_tickets'), safeRows('partner_support_messages'), safeRows('phone_pin_reset_requests'), safeRows('customer_phone_verification_requests'), safeAdminUsers()
   ]);
   const items=[];
   const read=readNotificationKeys();
@@ -645,6 +646,15 @@ async function loadAdminNotifications() {
     const who=r.account_role==='driver'?'سائق':r.account_role==='business'?'متجر':'عميل';
     items.push({type:'pin_reset',group:'pin',id:r.id,label:`طلب استرجاع PIN من ${who}: ${r.phone_e164||''}`,page:'system',systemTab:r.account_role==='customer'?'pin-customers':'pin-partners',icon:'🔐',time:r.requested_at||r.updated_at||null,priority:7});
   }
+  // Phone verification requests are account-security notifications, like PIN recovery.
+  // Keep the request ID stable so changing pending -> issued does not re-alert the admin.
+  for(const r of phoneVerificationR.rows||[]){
+    if(!['pending','issued'].includes(String(r.status||'').toLowerCase())) continue;
+    items.push({type:'phone_verification',group:'phone',id:r.id,
+      label:`طلب تأكيد رقم هاتف: ${r.phone_e164||''}`,
+      page:'system',systemTab:'phone-verification',icon:'📱',
+      time:r.requested_at||r.created_at||r.updated_at||null,priority:8});
+  }
   items.sort((a,b)=>(new Date(b.time||0)-new Date(a.time||0))||(b.priority-a.priority)||String(b.id||'').localeCompare(String(a.id||'')));
   items.forEach(i=>i.read=read.has(notificationKey(i)));
   adminNotificationState={items,unread:items.filter(i=>!i.read).length,loadedAt:new Date()};
@@ -653,7 +663,7 @@ async function loadAdminNotifications() {
   return adminNotificationState;
 }
 function isSecurityNotification(item){
-  return ['pin','access'].includes(String(item?.group||''));
+  return ['pin','access','phone'].includes(String(item?.group||''));
 }
 function updateAdminBell(){
   const badge=document.getElementById('adminBellBadge'); if(!badge)return;
@@ -720,7 +730,7 @@ function renderNotificationPanel(){
   if(!securityMode && adminNotificationGroupFilter!=='all') visibleItems=items.filter(i=>(i.group||'other')===adminNotificationGroupFilter);
   const securityButton=(group,icon,label)=>`<button type="button" class="notification-scope-btn ${adminSecuritySubFilter===group?'active':''}" data-security-group="${group}">${icon} ${label} <b>${fmtNumber(group==='all'?items.length:(groupCounts[group]||0))}</b></button>`;
   const filters=securityMode
-    ? `<div class="notification-scope-summary security-scope-summary">${securityButton('all','🛡️','الكل')}${securityButton('pin','🔐','استرجاع PIN')}${securityButton('access','➕','طلبات الانضمام')}</div>`
+    ? `<div class="notification-scope-summary security-scope-summary">${securityButton('all','🛡️','الكل')}${securityButton('pin','🔐','استرجاع PIN')}${securityButton('phone','📱','تأكيد الهاتف')}${securityButton('access','➕','طلبات الانضمام')}</div>`
     : `<div class="notification-scope-summary">${groupButton('all','🔔','الكل')}${groupButton('orders','🧾','الطلبات')}${groupButton('stores','🏪','المتاجر')}${groupButton('users','👥','المستخدمون')}${groupButton('drivers','🚚','السائقون')}${groupButton('support','🎧','الدعم')}</div>`;
   if(securityMode && adminSecuritySubFilter!=='all') visibleItems=items.filter(i=>(i.group||'other')===adminSecuritySubFilter);
   panel.innerHTML=`<div class="notification-panel-head"><div><span>${securityMode?'تنبيهات الحسابات':'مركز التنبيهات'}</span><h3>${securityMode?'تنبيهات PIN والانضمام':'إشعارات الإدارة'}</h3><small class="notification-build">Stage 29 Mobile Core</small></div><div class="notification-head-actions"><button id="refreshAdminNotifications" class="icon-btn small">↻</button><button id="closeAdminNotifications" class="icon-btn small">✕</button></div></div>
@@ -2622,6 +2632,7 @@ async function startSystemSupportRealtime(){
     .on('postgres_changes',{event:'*',schema:'public',table:'partner_support_tickets'},scheduleSupportRealtimeRefresh)
     .on('postgres_changes',{event:'*',schema:'public',table:'partner_support_messages'},scheduleSupportRealtimeRefresh)
     .on('postgres_changes',{event:'*',schema:'public',table:'phone_pin_reset_requests'},scheduleSupportRealtimeRefresh)
+    .on('postgres_changes',{event:'*',schema:'public',table:'customer_phone_verification_requests'},scheduleSupportRealtimeRefresh)
     .on('postgres_changes',{event:'*',schema:'public',table:'stores'},scheduleSupportRealtimeRefresh)
     .on('postgres_changes',{event:'*',schema:'public',table:'admin_store_reviews'},scheduleSupportRealtimeRefresh)
     .on('postgres_changes',{event:'*',schema:'public',table:'partner_profiles'},scheduleSupportRealtimeRefresh)
