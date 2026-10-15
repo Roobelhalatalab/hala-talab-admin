@@ -593,11 +593,11 @@ async function loadAdminNotifications() {
   for (const r of pinResetR.rows||[]) {
     if(!['pending','issued'].includes(String(r.status||'').toLowerCase())) continue;
     const who=r.account_role==='driver'?'سائق':r.account_role==='business'?'متجر':'عميل';
-    items.push({type:'pin_reset',group:'pin',id:r.id,label:`طلب استرجاع PIN من ${who}: ${r.phone_e164||''}`,page:'system',systemTab:r.account_role==='customer'?'pin-customers':'pin-partners',icon:'🔐',time:r.requested_at||r.updated_at||null,priority:7});
+    items.push({type:'pin_reset',group:'pin',status:String(r.status||'').toLowerCase(),id:r.id,label:`طلب استرجاع PIN من ${who}: ${r.phone_e164||''}`,page:'system',systemTab:r.account_role==='customer'?'pin-customers':'pin-partners',icon:'🔐',time:r.requested_at||r.updated_at||null,priority:7});
   }
   for (const r of phoneVerificationR.rows||[]) {
     if(!['pending','issued'].includes(String(r.status||'').toLowerCase())) continue;
-    items.push({type:'phone_verification',group:'phone',id:r.id,label:`طلب تأكيد رقم هاتف: ${r.phone_e164||''}`,page:'system',systemTab:'phone-verification',icon:'📱',time:r.requested_at||r.created_at||r.updated_at||null,priority:8});
+    items.push({type:'phone_verification',group:'phone',status:String(r.status||'').toLowerCase(),id:r.id,label:`طلب تأكيد رقم هاتف: ${r.phone_e164||''}`,page:'system',systemTab:'phone-verification',icon:'📱',time:r.requested_at||r.created_at||r.updated_at||null,priority:8});
   }
   items.sort((a,b)=>new Date(b.time||0)-new Date(a.time||0));
   items.forEach(i=>i.read=read.has(notificationKey(i)));
@@ -607,7 +607,7 @@ async function loadAdminNotifications() {
 }
 function updatePhoneVerifyBell(){
   const badge=document.getElementById('phoneVerifyBellBadge'); if(!badge)return;
-  const n=(adminNotificationState.items||[]).filter(i=>i.group==='phone'&&!i.read).length;
+  const n=(adminNotificationState.items||[]).filter(i=>i.group==='phone' && i.type==='phone_verification' && i.status==='pending').length;
   badge.textContent=n>99?'99+':String(n);badge.classList.toggle('hidden',n===0);
 }
 function isSecurityNotification(item){
@@ -620,38 +620,16 @@ function updateAdminBell(){
 }
 function updatePinBell(){
   const badge=document.getElementById('pinBellBadge'); if(!badge)return;
-  const n=(adminNotificationState.items||[]).filter(i=>i.group==='pin' && !i.read).length;
+  const n=(adminNotificationState.items||[]).filter(i=>i.group==='pin' && i.status==='pending').length;
   badge.textContent=n>99?'99+':String(n); badge.classList.toggle('hidden',n===0);
 }
 
 function navigateAdminPage(page, systemTab=null){
-  // Deep-link notifications directly to their real destination.
-  // For System tabs, set the destination BEFORE rendering the page so async loading
-  // cannot leave the user on the generic "إدارة النظام" overview.
-  if(page==='system' && systemTab && typeof systemPageState!=='undefined'){
-    systemPageState.tab=systemTab;
-  }
+  if(page==='system' && systemTab) systemPageState.tab=systemTab;
   const btn=document.querySelector(`.nav-item[data-page="${page}"]`);
   if(btn) btn.click();
-
-  // Defensive retry for slower devices/browsers: if the tab UI appears later,
-  // activate the requested tab and render its content again.
-  if(page==='system' && systemTab){
-    let tries=0;
-    const timer=setInterval(()=>{
-      tries++;
-      const tabBtn=document.querySelector(`[data-system-tab="${systemTab}"]`);
-      if(tabBtn){
-        document.querySelectorAll('[data-system-tab]').forEach(x=>x.classList.toggle('active',x===tabBtn));
-        if(typeof systemPageState!=='undefined') systemPageState.tab=systemTab;
-        if(typeof renderSystemTab==='function') renderSystemTab();
-        clearInterval(timer);
-      }else if(tries>=20){
-        clearInterval(timer);
-      }
-    },100);
-  }
 }
+
 function markNotificationRead(item){
   const keys=readNotificationKeys(); keys.add(notificationKey(item)); saveNotificationKeys(keys); item.read=true;
   adminNotificationState.unread=adminNotificationState.items.filter(i=>!i.read).length; updateAdminBell(); updatePinBell(); updatePhoneVerifyBell();
@@ -715,8 +693,8 @@ function wireAdminNotifications(){
     adminSecuritySubFilter=group;
     renderNotificationPanel();
   };
-  pinBell?.addEventListener('click',()=>openScope('pin'));
-  phoneBell?.addEventListener('click',()=>openScope('phone'));
+  pinBell?.addEventListener('click',()=>{closeNotificationPanel();navigateAdminPage('system','pin-customers');});
+  phoneBell?.addEventListener('click',()=>{closeNotificationPanel();navigateAdminPage('system','phone-verification');});
   loadAdminNotifications();
   // Preserve the existing realtime subscriptions used elsewhere in system pages.
   startSystemSupportRealtime();
@@ -1987,6 +1965,17 @@ async function systemFirstRows(list) {
   }
   return { ok:false, rows:[], table:null };
 }
+async function loadSystemSecurityRequests(tab){
+  if(tab==='phone-verification'){
+    const r=await systemFirstRows(['customer_phone_verification_requests']);
+    systemPageState.phoneVerifications=r.rows;
+    systemPageState.phoneVerificationTable=r.table;
+  } else if(tab==='pin-customers' || tab==='pin-partners'){
+    const r=await systemFirstRows(['phone_pin_reset_requests']);
+    systemPageState.pinResets=r.rows;
+    systemPageState.pinResetTable=r.table;
+  }
+}
 async function loadSystemData() {
   const [categories, clientCategories, coupons, platformCoupons, couponSettlements, promotions, support, partnerSupport, pinResets, phoneVerifications, commissions, subscriptions, settings, audit, stores] = await Promise.all([
     systemFirstRows(['product_categories','store_categories']),
@@ -2925,7 +2914,7 @@ function renderSystemAudit() {
 // Phone verification is separate from PIN recovery: distinct requests, codes and RPCs.
 function renderCustomerPhoneVerifications(){
   if(!systemPageState.phoneVerificationTable) return '<div class="inline-alert warning">جدول تأكيد الأرقام غير متاح. SQL التحديث لم ينفذ بعد.</div>';
-  const rows=[...systemPageState.phoneVerifications].sort((a,b)=>new Date(b.requested_at||0)-new Date(a.requested_at||0));
+  const rows=[...systemPageState.phoneVerifications].sort((a,b)=>((a.status==='pending'?0:a.status==='issued'?1:2)-(b.status==='pending'?0:b.status==='issued'?1:2)) || (new Date(b.requested_at||0)-new Date(a.requested_at||0)));
   return `<section class="pin-recovery-hero"><div><span class="pill">حماية الحسابات</span><h3>تأكيد أرقام العملاء</h3><p>الرمز خاص بتأكيد الهاتف ولا يصلح لاسترجاع PIN. تأكد من صاحب الرقم قبل الإرسال.</p></div><span class="tag">${rows.filter(r=>['pending','issued'].includes(r.status)).length} طلب مفتوح</span></section><div class="table-wrap"><table class="data-table"><thead><tr><th>الهاتف</th><th>الحالة</th><th>الطلب</th><th>الإجراء</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-phone-verify-row="${escapeHtml(String(r.id))}"><td dir="ltr">${escapeHtml(r.phone_e164||'—')}</td><td>${escapeHtml(pinResetStatusLabel(r.status))}</td><td>${fmtDate(r.requested_at)}</td><td>${['pending','issued'].includes(r.status)?`<button class="primary-btn tiny" data-phone-verify-issue="${escapeHtml(String(r.id))}">إصدار رمز واتساب</button>`:'—'}</td></tr>`).join(''):'<tr><td colspan="4">لا توجد طلبات حالياً.</td></tr>'}</tbody></table></div>`;
 }
 async function issueCustomerPhoneVerification(requestId){
@@ -2960,7 +2949,7 @@ function focusPendingPhoneVerification(){
 function wireCustomerPhoneVerifications(){
   setTimeout(focusPendingPhoneVerification,60);
   document.querySelectorAll('[data-phone-verify-issue]').forEach(b=>b.addEventListener('click',async()=>{
-    b.disabled=true;try{await issueCustomerPhoneVerification(b.dataset.phoneVerifyIssue);await loadSystemData();renderSystemTab();}catch(e){alert('تعذر إصدار الرمز: '+e.message);}finally{b.disabled=false;}
+    b.disabled=true;try{await issueCustomerPhoneVerification(b.dataset.phoneVerifyIssue);await loadSystemSecurityRequests('phone-verification');renderSystemTab();}catch(e){alert('تعذر إصدار الرمز: '+e.message);}finally{b.disabled=false;}
   }));
 }
 
@@ -2980,18 +2969,28 @@ function renderSystemTab() {
   else { host.innerHTML=renderSystemOverview(); wireSystemOverview(); }
 }
 function wireSystemTabs() {
-  document.querySelectorAll('[data-system-tab]').forEach((button)=>button.addEventListener('click',()=>{
-    systemPageState.tab=button.dataset.systemTab;
-    document.querySelectorAll('[data-system-tab]').forEach((x)=>x.classList.toggle('active',x===button));
-    renderSystemTab();
+  document.querySelectorAll('[data-system-tab]').forEach(button=>button.addEventListener('click',async()=>{
+    const tab=button.dataset.systemTab;
+    systemPageState.tab=tab;
+    document.querySelectorAll('[data-system-tab]').forEach(x=>x.classList.toggle('active',x===button));
+    const host=document.getElementById('systemTabContent');
+    if(['phone-verification','pin-customers','pin-partners'].includes(tab)){
+      if(host) host.innerHTML='<div class="loading-panel">جارٍ تحميل الطلبات...</div>';
+      await loadSystemSecurityRequests(tab);
+    } else if(!systemPageState._fullDataLoaded){
+      if(host) host.innerHTML='<div class="loading-panel">جارٍ تحميل البيانات...</div>';
+      await loadSystemData(); systemPageState._fullDataLoaded=true;
+    }
+    if(systemPageState.tab===tab) renderSystemTab();
   }));
 }
 async function renderSystemPage() {
   const content=document.getElementById('content');
   content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل إدارة النظام...</h2><p>تجهيز أدوات إدارة المنصة...</p></section>`;
   try {
-    await loadSystemData();
-    await startSystemSupportRealtime();
+    const securityTab=['phone-verification','pin-customers','pin-partners'].includes(systemPageState.tab);
+    if(securityTab) await loadSystemSecurityRequests(systemPageState.tab);
+    else { await loadSystemData(); systemPageState._fullDataLoaded=true; await startSystemSupportRealtime(); }
     content.innerHTML=`<section class="dashboard-hero"><div><span class="pill">لوحة الإدارة</span><h2>إدارة النظام</h2><p>إدارة واضحة للأقسام والعروض والدعم والإعدادات، مع إبقاء الأدوات المتقدمة عند الحاجة.</p></div><button id="refreshSystem" class="secondary-btn">↻ تحديث البيانات</button></section><section class="system-tabs">${SYSTEM_TABS.map(([id,label])=>`<button class="system-tab ${systemPageState.tab===id?'active':''}" data-system-tab="${id}">${label}</button>`).join('')}</section><section class="panel system-tab-panel" id="systemTabContent"></section>`;
     wireSystemTabs();
     document.getElementById('refreshSystem')?.addEventListener('click',renderSystemPage);
