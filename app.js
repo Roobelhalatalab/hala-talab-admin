@@ -765,7 +765,7 @@ function wireAdminNotifications(){
     if(document.getElementById('adminNotificationPanel')) closeNotificationPanel();
     if(!adminNotificationState.loadedAt) await loadAdminNotifications();
     adminNotificationGroupFilter='security';
-    adminSecuritySubFilter='all';
+    adminSecuritySubFilter='pin';
     renderNotificationPanel();
   });
   loadAdminNotifications();
