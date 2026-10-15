@@ -107,7 +107,7 @@ async function handleLogin(event) {
   renderDashboard(data.user);
 }
 function renderDashboard(user) {
-  app.innerHTML = `<div class="dashboard-shell"><aside class="sidebar" id="sidebar"><div class="sidebar-brand"><div class="brand-mark small">هـ</div><div><strong>هلا طلب</strong><span>لوحة الإدارة</span></div></div><nav class="sidebar-nav">${navItems.map(([id,label],i)=>`<button class="nav-item ${i===0?'active':''}" data-page="${id}"><span>${icons[id]}</span>${label}</button>`).join('')}</nav><button id="logoutBtn" class="nav-item logout"><span>${icons.logout}</span>تسجيل الخروج</button></aside><div class="main-area"><header class="topbar"><button id="menuBtn" class="icon-btn mobile-only">${icons.menu}</button><div class="page-title"><span>الإدارة</span><h1 id="pageTitle">لوحة المتابعة اليومية</h1></div><div class="top-actions"><button id="pushEnableBtn" class="icon-btn notification-bell" aria-label="تفعيل إشعارات الهاتف" title="تفعيل إشعارات الهاتف">📲</button><button id="pinBellBtn" class="icon-btn notification-bell pin-bell" aria-label="طلبات استرجاع PIN">🔐<span id="pinBellBadge" class="notification-badge hidden">0</span></button><button id="adminBellBtn" class="icon-btn notification-bell" aria-label="إشعارات الإدارة">${icons.bell}<span id="adminBellBadge" class="notification-badge hidden">0</span></button><div class="admin-chip"><div class="avatar">${escapeHtml((user.email||'A')[0].toUpperCase())}</div><div><strong>مدير النظام</strong><span>${escapeHtml(user.email||'')}</span></div></div></div></header><main class="content" id="content"></main></div><div class="sidebar-overlay" id="sidebarOverlay"></div></div>`;
+  app.innerHTML = `<div class="dashboard-shell"><aside class="sidebar" id="sidebar"><div class="sidebar-brand"><div class="brand-mark small">هـ</div><div><strong>هلا طلب</strong><span>لوحة الإدارة</span></div></div><nav class="sidebar-nav">${navItems.map(([id,label],i)=>`<button class="nav-item ${i===0?'active':''}" data-page="${id}"><span>${icons[id]}</span>${label}</button>`).join('')}</nav><button id="logoutBtn" class="nav-item logout"><span>${icons.logout}</span>تسجيل الخروج</button></aside><div class="main-area"><header class="topbar"><button id="menuBtn" class="icon-btn mobile-only">${icons.menu}</button><div class="page-title"><span>الإدارة</span><h1 id="pageTitle">لوحة المتابعة اليومية</h1></div><div class="top-actions"><button id="pushEnableBtn" class="icon-btn notification-bell" aria-label="تفعيل إشعارات الهاتف" title="تفعيل إشعارات الهاتف">📲</button><button id="phoneVerifyBellBtn" class="icon-btn notification-bell pin-bell" aria-label="طلبات تأكيد الهاتف" title="طلبات تأكيد الهاتف">📱<span id="phoneVerifyBellBadge" class="notification-badge hidden">0</span></button><button id="pinBellBtn" class="icon-btn notification-bell pin-bell" aria-label="طلبات استرجاع PIN" title="طلبات استرجاع PIN">🔐<span id="pinBellBadge" class="notification-badge hidden">0</span></button><div class="admin-chip"><div class="avatar">${escapeHtml((user.email||'A')[0].toUpperCase())}</div><div><strong>مدير النظام</strong><span>${escapeHtml(user.email||'')}</span></div></div></div></header><main class="content" id="content"></main></div><div class="sidebar-overlay" id="sidebarOverlay"></div></div>`;
   wireDashboard(); wireAdminNotifications(); wirePhonePush(user); renderStageTwoDashboard(); consumePushDeepLinkFromUrl();
 }
 
@@ -581,86 +581,34 @@ function withinDays(value, days=7) {
   const t=new Date(value).getTime(); if(!Number.isFinite(t)) return false;
   return (Date.now()-t) <= days*24*60*60*1000;
 }
+// HTA69: Only security-code requests are queried for header notifications.
+// The former general bell performed many unrelated Supabase reads per refresh.
 async function loadAdminNotifications() {
-  const [ordersR, storesR, storeReviewsR, profilesR, driverReviewsR, supportR, supportMessagesR, partnerSupportR, partnerSupportMessagesR, pinResetR, phoneVerificationR, usersR] = await Promise.all([
-    safeRows('orders'), safeRows('stores'), safeRows('admin_store_reviews'), safeRows('partner_profiles'), safeRows('admin_driver_reviews'), safeRows('customer_support_conversations'), safeRows('customer_support_messages'), safeRows('partner_support_tickets'), safeRows('partner_support_messages'), safeRows('phone_pin_reset_requests'), safeRows('customer_phone_verification_requests'), safeAdminUsers()
+  const [pinResetR, phoneVerificationR] = await Promise.all([
+    safeRows('phone_pin_reset_requests'),
+    safeRows('customer_phone_verification_requests')
   ]);
   const items=[];
   const read=readNotificationKeys();
-  const storeReviewMap=new Map((storeReviewsR.rows||[]).map(r=>[String(r.store_id),String(r.review_status||'pending')]));
-  for(const st of storesR.rows||[]){
-    const status=storeReviewMap.get(String(st.id))||'pending';
-    const active=pick(st,['is_active','active','enabled'],null);
-    const time=pick(st,['updated_at','created_at'],null);
-    if(status==='pending') items.push({type:'store_review',group:'access',id:st.id,label:`متجر ينتظر المراجعة: ${storeName(st)}`,page:'stores',icon:'🏪',time,priority:5});
-    else if(status==='approved' && active===false) items.push({type:'store_activation',group:'stores',id:st.id,label:`متجر مقبول ينتظر التفعيل: ${storeName(st)}`,page:'stores',icon:'✅',time,priority:5});
-    else if(status==='approved') items.push({type:'store_approved',group:'stores',id:st.id,label:`متجر مقبول ومفعّل: ${storeName(st)}`,page:'stores',icon:'✅',time,priority:2});
-    else if(status==='rejected') items.push({type:'store_rejected',group:'stores',id:st.id,label:`متجر مرفوض: ${storeName(st)}`,page:'stores',icon:'⛔',time,priority:2});
-  }
-  for(const u of usersR.rows||[]){
-    items.push({type:'new_user',group:'users',id:u.user_id,label:`مستخدم: ${userDisplayName(u)} · ${userTypeLabel(u.effective_type)}`,page:'users',icon:'👤',time:u.created_at||u.updated_at||null,priority:2});
-  }
-  const driverReviewMap=new Map((driverReviewsR.rows||[]).map(r=>[String(r.driver_id),String(r.review_status||'pending')]));
-  for(const p of profilesR.rows||[]){
-    if(String(p.partner_type||'').toLowerCase()!=='driver') continue;
-    const status=driverReviewMap.get(String(p.id))||'pending';
-    const label=status==='pending'?'سائق ينتظر المراجعة':status==='approved'?'سائق مقبول':'سائق مرفوض';
-    items.push({type:'driver_review',group:status==='pending'?'access':'drivers',id:p.id,label:`${label}: ${pick(p,['full_name','email'],'سائق')}`,page:'drivers',icon:'🚚',time:pick(p,['updated_at','created_at'],null),priority:status==='pending'?6:2});
-  }
-  for(const o of ordersR.rows||[]){
-    const st=normalizeStatus(pick(o,['status','order_status'],''));
-    const dt=orderDateValue(o); const age=rowAgeMinutes(dt);
-    if(st==='pending') items.push({type:'new_order',group:'orders',id:o.id,label:`طلب جديد رقم ${orderDisplayNo(o)}`,page:'orders',icon:'🧾',time:dt,priority:4});
-    else if(!['delivered','cancelled'].includes(st) && age>=45) items.push({type:'late_order',group:'orders',id:o.id,label:`طلب متأخر رقم ${orderDisplayNo(o)} · منذ ${humanDurationMinutes(age)}`,page:'orders',icon:'⏱️',time:dt,priority:5});
-  }
-  const supportById=new Map((supportR.rows||[]).map(c=>[String(c.id),c]));
-  for(const m of supportMessagesR.rows||[]){
-    if(String(pick(m,['sender_type','sender_role'],'')).toLowerCase()!=='customer') continue;
-    const conversationId=String(pick(m,['conversation_id'],'')||'');
-    const c=supportById.get(conversationId);
-    const subject=c?pick(c,['subject_ar','subject','subject_en'],''):'';
-    items.push({type:'support_message',group:'support',id:m.id,conversationId,label:`رسالة دعم جديدة${subject?`: ${subject}`:''}`,page:'system',systemTab:'support',icon:'🎧',time:pick(m,['created_at','sent_at'],null),priority:5});
-  }
-  for(const c of supportR.rows||[]){
-    const status=String(pick(c,['status','state'],'open')).toLowerCase();
-    if(!['closed','resolved','done'].includes(status) && !(supportMessagesR.rows||[]).some(m=>String(m.conversation_id)===String(c.id))) items.push({type:'support',group:'support',id:c.id,conversationId:c.id,label:`محادثة دعم تحتاج متابعة${pick(c,['subject_ar','subject','subject_en'],'')?`: ${pick(c,['subject_ar','subject','subject_en'],'')}`:''}`,page:'system',systemTab:'support',icon:'🎧',time:pick(c,['created_at','updated_at'],null),priority:4});
-  }
-  const partnerById=new Map((partnerSupportR.rows||[]).map(t=>[String(t.id),t]));
-  for(const m of partnerSupportMessagesR.rows||[]){
-    const role=String(pick(m,['sender_role','sender_type'],'')).toLowerCase();
-    if(['admin','support','management'].includes(role)) continue;
-    if(m.is_read===true) continue;
-    const ticketId=String(pick(m,['ticket_id'],'')||'');
-    const t=partnerById.get(ticketId);
-    const who=role==='driver'?'السائق':'المتجر';
-    const subject=t?pick(t,['subject_ar','subject','title','category'],''):'';
-    items.push({type:'partner_support_message',group:'support',id:m.id,conversationId:ticketId,label:`رسالة جديدة من ${who}${subject?`: ${subject}`:''}`,page:'system',systemTab:'support',icon:'🎧',time:pick(m,['created_at','sent_at'],null),priority:6,source:'partner'});
-  }
-  for(const t of partnerSupportR.rows||[]){
-    const status=String(pick(t,['status','state'],'open')).toLowerCase();
-    const hasMessage=(partnerSupportMessagesR.rows||[]).some(m=>String(m.ticket_id)===String(t.id));
-    if(!['closed','resolved','done'].includes(status) && !hasMessage) items.push({type:'partner_support',group:'support',id:t.id,conversationId:t.id,label:`تذكرة دعم جديدة من ${String(pick(t,['category'],'')).toLowerCase().startsWith('driver_')?'السائق':'المتجر'}`,page:'system',systemTab:'support',icon:'🎧',time:pick(t,['created_at','updated_at'],null),priority:6,source:'partner'});
-  }
-  for(const r of pinResetR.rows||[]){
+  for (const r of pinResetR.rows||[]) {
     if(!['pending','issued'].includes(String(r.status||'').toLowerCase())) continue;
     const who=r.account_role==='driver'?'سائق':r.account_role==='business'?'متجر':'عميل';
     items.push({type:'pin_reset',group:'pin',id:r.id,label:`طلب استرجاع PIN من ${who}: ${r.phone_e164||''}`,page:'system',systemTab:r.account_role==='customer'?'pin-customers':'pin-partners',icon:'🔐',time:r.requested_at||r.updated_at||null,priority:7});
   }
-  // Phone verification requests are account-security notifications, like PIN recovery.
-  // Keep the request ID stable so changing pending -> issued does not re-alert the admin.
-  for(const r of phoneVerificationR.rows||[]){
+  for (const r of phoneVerificationR.rows||[]) {
     if(!['pending','issued'].includes(String(r.status||'').toLowerCase())) continue;
-    items.push({type:'phone_verification',group:'phone',id:r.id,
-      label:`طلب تأكيد رقم هاتف: ${r.phone_e164||''}`,
-      page:'system',systemTab:'phone-verification',icon:'📱',
-      time:r.requested_at||r.created_at||r.updated_at||null,priority:8});
+    items.push({type:'phone_verification',group:'phone',id:r.id,label:`طلب تأكيد رقم هاتف: ${r.phone_e164||''}`,page:'system',systemTab:'phone-verification',icon:'📱',time:r.requested_at||r.created_at||r.updated_at||null,priority:8});
   }
-  items.sort((a,b)=>(new Date(b.time||0)-new Date(a.time||0))||(b.priority-a.priority)||String(b.id||'').localeCompare(String(a.id||'')));
+  items.sort((a,b)=>new Date(b.time||0)-new Date(a.time||0));
   items.forEach(i=>i.read=read.has(notificationKey(i)));
   adminNotificationState={items,unread:items.filter(i=>!i.read).length,loadedAt:new Date()};
-  updateAdminBell();
-  updatePinBell();
+  updatePinBell(); updatePhoneVerifyBell();
   return adminNotificationState;
+}
+function updatePhoneVerifyBell(){
+  const badge=document.getElementById('phoneVerifyBellBadge'); if(!badge)return;
+  const n=(adminNotificationState.items||[]).filter(i=>i.group==='phone'&&!i.read).length;
+  badge.textContent=n>99?'99+':String(n);badge.classList.toggle('hidden',n===0);
 }
 function isSecurityNotification(item){
   return ['pin','access','phone'].includes(String(item?.group||''));
@@ -672,7 +620,7 @@ function updateAdminBell(){
 }
 function updatePinBell(){
   const badge=document.getElementById('pinBellBadge'); if(!badge)return;
-  const n=(adminNotificationState.items||[]).filter(i=>isSecurityNotification(i) && !i.read).length;
+  const n=(adminNotificationState.items||[]).filter(i=>i.group==='pin' && !i.read).length;
   badge.textContent=n>99?'99+':String(n); badge.classList.toggle('hidden',n===0);
 }
 
@@ -706,14 +654,14 @@ function navigateAdminPage(page, systemTab=null){
 }
 function markNotificationRead(item){
   const keys=readNotificationKeys(); keys.add(notificationKey(item)); saveNotificationKeys(keys); item.read=true;
-  adminNotificationState.unread=adminNotificationState.items.filter(i=>!i.read).length; updateAdminBell(); updatePinBell();
+  adminNotificationState.unread=adminNotificationState.items.filter(i=>!i.read).length; updateAdminBell(); updatePinBell(); updatePhoneVerifyBell();
 }
 function markVisibleNotificationsRead(){
   const securityMode=adminNotificationGroupFilter==='security';
   const keys=readNotificationKeys();
   (adminNotificationState.items||[]).filter(i=>securityMode?isSecurityNotification(i):!isSecurityNotification(i)).forEach(i=>{keys.add(notificationKey(i));i.read=true;});
   saveNotificationKeys(keys); adminNotificationState.unread=adminNotificationState.items.filter(i=>!i.read).length;
-  updateAdminBell(); updatePinBell(); renderNotificationPanel();
+  updateAdminBell(); updatePinBell(); updatePhoneVerifyBell(); renderNotificationPanel();
 }
 function closeNotificationPanel(){ document.getElementById('adminNotificationPanel')?.remove(); }
 function renderNotificationPanel(){
@@ -730,10 +678,10 @@ function renderNotificationPanel(){
   if(!securityMode && adminNotificationGroupFilter!=='all') visibleItems=items.filter(i=>(i.group||'other')===adminNotificationGroupFilter);
   const securityButton=(group,icon,label)=>`<button type="button" class="notification-scope-btn ${adminSecuritySubFilter===group?'active':''}" data-security-group="${group}">${icon} ${label} <b>${fmtNumber(group==='all'?items.length:(groupCounts[group]||0))}</b></button>`;
   const filters=securityMode
-    ? `<div class="notification-scope-summary security-scope-summary">${securityButton('all','🛡️','الكل')}${securityButton('pin','🔐','استرجاع PIN')}${securityButton('phone','📱','تأكيد الهاتف')}${securityButton('access','➕','طلبات الانضمام')}</div>`
+    ? `<div class="notification-scope-summary security-scope-summary">${securityButton('pin','🔐','استرجاع PIN')}${securityButton('phone','📱','تأكيد الهاتف')}</div>`
     : `<div class="notification-scope-summary">${groupButton('all','🔔','الكل')}${groupButton('orders','🧾','الطلبات')}${groupButton('stores','🏪','المتاجر')}${groupButton('users','👥','المستخدمون')}${groupButton('drivers','🚚','السائقون')}${groupButton('support','🎧','الدعم')}</div>`;
   if(securityMode && adminSecuritySubFilter!=='all') visibleItems=items.filter(i=>(i.group||'other')===adminSecuritySubFilter);
-  panel.innerHTML=`<div class="notification-panel-head"><div><span>${securityMode?'تنبيهات الحسابات':'مركز التنبيهات'}</span><h3>${securityMode?'تنبيهات PIN والانضمام':'إشعارات الإدارة'}</h3><small class="notification-build">Stage 29 Mobile Core</small></div><div class="notification-head-actions"><button id="refreshAdminNotifications" class="icon-btn small">↻</button><button id="closeAdminNotifications" class="icon-btn small">✕</button></div></div>
+  panel.innerHTML=`<div class="notification-panel-head"><div><span>${securityMode?'تنبيهات الحسابات':'مركز التنبيهات'}</span><h3>${securityMode?(adminSecuritySubFilter==='phone'?'طلبات تأكيد الهاتف':'طلبات استرجاع PIN'):'إشعارات الإدارة'}</h3><small class="notification-build">Stage 29 Mobile Core</small></div><div class="notification-head-actions"><button id="refreshAdminNotifications" class="icon-btn small">↻</button><button id="closeAdminNotifications" class="icon-btn small">✕</button></div></div>
     <div class="notification-summary"><b>${fmtNumber(unread)} غير مقروء</b><button id="markAllAdminNotifications" class="link-btn">تعليم الظاهر كمقروء</button></div>
     ${filters}
     <div class="notification-list">${visibleItems.length?visibleItems.slice(0,40).map(i=>{const idx=allItems.indexOf(i);return `<button class="notification-item ${i.read?'read':'unread'}" data-notification-index="${idx}"><span class="notification-item-icon">${i.icon}</span><span><b>${escapeHtml(i.label)}</b><small>${i.time?fmtDate(i.time):'الآن'}</small></span><i>›</i></button>`;}).join(''):`<div class="notification-empty">لا توجد إشعارات ضمن ${securityMode?'التنبيهات المهمة':(groupLabel[adminNotificationGroupFilter]||'هذا القسم')} حاليًا.</div>`}</div>`;
@@ -757,23 +705,24 @@ async function toggleNotificationPanel(){
   renderNotificationPanel();
 }
 function wireAdminNotifications(){
-  const bell=document.getElementById('adminBellBtn');
   const pinBell=document.getElementById('pinBellBtn');
-  if(!bell && !pinBell)return;
-  bell?.addEventListener('click',()=>{adminNotificationGroupFilter='all';toggleNotificationPanel();});
-  pinBell?.addEventListener('click',async()=>{
-    if(document.getElementById('adminNotificationPanel')) closeNotificationPanel();
-    if(!adminNotificationState.loadedAt) await loadAdminNotifications();
+  const phoneBell=document.getElementById('phoneVerifyBellBtn');
+  if(!pinBell && !phoneBell)return;
+  const openScope=async group=>{
+    if(document.getElementById('adminNotificationPanel'))closeNotificationPanel();
+    await loadAdminNotifications();
     adminNotificationGroupFilter='security';
-    adminSecuritySubFilter='pin';
+    adminSecuritySubFilter=group;
     renderNotificationPanel();
-  });
+  };
+  pinBell?.addEventListener('click',()=>openScope('pin'));
+  phoneBell?.addEventListener('click',()=>openScope('phone'));
   loadAdminNotifications();
-  // PIN recovery, partner join requests, and support changes stay realtime globally.
+  // Preserve the existing realtime subscriptions used elsewhere in system pages.
   startSystemSupportRealtime();
   document.addEventListener('click',e=>{
     const panel=document.getElementById('adminNotificationPanel');
-    if(panel && !panel.contains(e.target) && !bell?.contains(e.target) && !pinBell?.contains(e.target)) closeNotificationPanel();
+    if(panel && !panel.contains(e.target) && !pinBell?.contains(e.target) && !phoneBell?.contains(e.target))closeNotificationPanel();
   });
 }
 
@@ -2816,12 +2765,20 @@ function renderPinResetRequests(scope='customer'){
 function focusPendingPinReset(){
   if(pendingAdminNavigationTarget?.type!=='pin_reset' || !pendingAdminNavigationTarget.id) return;
   const id=String(pendingAdminNavigationTarget.id);
-  const row=document.querySelector(`[data-pin-row="${CSS.escape(id)}"]`);
+  let row=document.querySelector(`[data-pin-row="${CSS.escape(id)}"]`);
+  // A partner filter may hide the exact request opened from a push notification.
+  if(!row && systemPageState.tab==='pin-partners' && systemPageState.pinPartnerFilter!=='all'){
+    systemPageState.pinPartnerFilter='all';
+    renderSystemTab();
+    return;
+  }
   if(!row) return;
   pendingAdminNavigationTarget=null;
   row.classList.add('pin-reset-focus');
   row.scrollIntoView({behavior:'smooth',block:'center'});
-  setTimeout(()=>row.classList.remove('pin-reset-focus'),3500);
+  const issue=row.querySelector('[data-pin-issue]');
+  if(issue){issue.focus({preventScroll:true});issue.classList.add('notification-target-action');}
+  setTimeout(()=>{row.classList.remove('pin-reset-focus');issue?.classList.remove('notification-target-action');},6000);
 }
 function wirePinRecovery(scope='customer'){
   document.querySelectorAll('[data-pin-issue]').forEach(b=>b.addEventListener('click',async()=>{try{await issuePinRecoveryCode(b.dataset.pinIssue);await loadSystemData();renderSystemTab();}catch(e){alert('تعذر إصدار الرمز: '+e.message);}}));
@@ -2969,7 +2926,7 @@ function renderSystemAudit() {
 function renderCustomerPhoneVerifications(){
   if(!systemPageState.phoneVerificationTable) return '<div class="inline-alert warning">جدول تأكيد الأرقام غير متاح. SQL التحديث لم ينفذ بعد.</div>';
   const rows=[...systemPageState.phoneVerifications].sort((a,b)=>new Date(b.requested_at||0)-new Date(a.requested_at||0));
-  return `<section class="pin-recovery-hero"><div><span class="pill">حماية الحسابات</span><h3>تأكيد أرقام العملاء</h3><p>الرمز خاص بتأكيد الهاتف ولا يصلح لاسترجاع PIN. تأكد من صاحب الرقم قبل الإرسال.</p></div><span class="tag">${rows.filter(r=>['pending','issued'].includes(r.status)).length} طلب مفتوح</span></section><div class="table-wrap"><table class="data-table"><thead><tr><th>الهاتف</th><th>الحالة</th><th>الطلب</th><th>الإجراء</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td dir="ltr">${escapeHtml(r.phone_e164||'—')}</td><td>${escapeHtml(pinResetStatusLabel(r.status))}</td><td>${fmtDate(r.requested_at)}</td><td>${['pending','issued'].includes(r.status)?`<button class="primary-btn tiny" data-phone-verify-issue="${escapeHtml(String(r.id))}">إصدار رمز واتساب</button>`:'—'}</td></tr>`).join(''):'<tr><td colspan="4">لا توجد طلبات حالياً.</td></tr>'}</tbody></table></div>`;
+  return `<section class="pin-recovery-hero"><div><span class="pill">حماية الحسابات</span><h3>تأكيد أرقام العملاء</h3><p>الرمز خاص بتأكيد الهاتف ولا يصلح لاسترجاع PIN. تأكد من صاحب الرقم قبل الإرسال.</p></div><span class="tag">${rows.filter(r=>['pending','issued'].includes(r.status)).length} طلب مفتوح</span></section><div class="table-wrap"><table class="data-table"><thead><tr><th>الهاتف</th><th>الحالة</th><th>الطلب</th><th>الإجراء</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-phone-verify-row="${escapeHtml(String(r.id))}"><td dir="ltr">${escapeHtml(r.phone_e164||'—')}</td><td>${escapeHtml(pinResetStatusLabel(r.status))}</td><td>${fmtDate(r.requested_at)}</td><td>${['pending','issued'].includes(r.status)?`<button class="primary-btn tiny" data-phone-verify-issue="${escapeHtml(String(r.id))}">إصدار رمز واتساب</button>`:'—'}</td></tr>`).join(''):'<tr><td colspan="4">لا توجد طلبات حالياً.</td></tr>'}</tbody></table></div>`;
 }
 async function issueCustomerPhoneVerification(requestId){
   const request=systemPageState.phoneVerifications.find(r=>String(r.id)===String(requestId));
@@ -2988,7 +2945,20 @@ async function issueCustomerPhoneVerification(requestId){
   overlay.querySelector('#phoneVerifyWhatsApp').onclick=()=>{const n=normalizePhoneForWhatsApp(phone);if(!n)return alert('رقم غير صالح');window.open(`https://wa.me/${n}?text=${encodeURIComponent(message)}`,'_blank','noopener,noreferrer');};
   overlay.querySelector('#phoneVerifyCopy').onclick=()=>navigator.clipboard.writeText(code).catch(()=>alert(code));
 }
+function focusPendingPhoneVerification(){
+  if(pendingAdminNavigationTarget?.type!=='phone_verification' || !pendingAdminNavigationTarget.id) return;
+  const id=String(pendingAdminNavigationTarget.id);
+  const row=document.querySelector(`[data-phone-verify-row="${CSS.escape(id)}"]`);
+  if(!row) return;
+  pendingAdminNavigationTarget=null;
+  row.classList.add('pin-reset-focus');
+  row.scrollIntoView({behavior:'smooth',block:'center'});
+  const issue=row.querySelector('[data-phone-verify-issue]');
+  if(issue){issue.focus({preventScroll:true});issue.classList.add('notification-target-action');}
+  setTimeout(()=>{row.classList.remove('pin-reset-focus');issue?.classList.remove('notification-target-action');},6000);
+}
 function wireCustomerPhoneVerifications(){
+  setTimeout(focusPendingPhoneVerification,60);
   document.querySelectorAll('[data-phone-verify-issue]').forEach(b=>b.addEventListener('click',async()=>{
     b.disabled=true;try{await issueCustomerPhoneVerification(b.dataset.phoneVerifyIssue);await loadSystemData();renderSystemTab();}catch(e){alert('تعذر إصدار الرمز: '+e.message);}finally{b.disabled=false;}
   }));

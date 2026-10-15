@@ -1047,3 +1047,7 @@ body{overflow-x:hidden;}
 .realtime-security-note p{margin:8px 0 0;color:var(--muted);line-height:1.8}
 @media(max-width:1100px){.realtime-monitor-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.realtime-monitor-grid{grid-template-columns:1fr}.realtime-status-box{align-items:flex-start}.realtime-monitor-card strong{font-size:25px}}
+
+/* Focus the exact security request selected from a notification. */
+.notification-target-action { outline: 3px solid #f59e0b !important; outline-offset: 3px; box-shadow: 0 0 0 5px rgba(245,158,11,.16); }
+[data-phone-verify-row].pin-reset-focus { background: rgba(245,158,11,.14); }
