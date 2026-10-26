@@ -1097,6 +1097,20 @@ async function saveStoreDisplayOrder(row) {
   applyStoresFilters();
 }
 
+// Independent five-row order: never modifies legacy stores.display_order.
+async function saveHomeStoreOrder(row){
+  const input=document.getElementById('homeStoreOrderInput');
+  const box=document.getElementById('homeStoreOrderMessage');
+  const button=document.getElementById('saveHomeStoreOrder');
+  if(!input||!box||!button)return;
+  const value=Number(input.value);
+  if(!Number.isInteger(value)||value<1||value>9999){box.textContent='أدخل ترتيباً من 1 إلى 9999.';return;}
+  button.disabled=true;
+  const {error}=await supabase.rpc('admin_set_home_store_order_v1',{p_store_id:row.id,p_sort_order:value});
+  button.disabled=false;
+  if(!error){row._home_store_order=value;input.value=String(value);}
+  box.textContent=error?'تعذر حفظ ترتيب المجموعة: '+error.message:'تم حفظ ترتيب المتجر ضمن مجموعته الجديدة.';
+}
 let storeAdminSystemCategories=[];
 function storeCategoryOptionsHtml(row) {
   const current=String(row?.system_category_id||'');
@@ -1130,16 +1144,20 @@ async function saveStoreSystemCategory(row) {
 
 async function fetchStoresAdmin() {
   try {
-    const [storesR,categoriesR]=await Promise.all([
+    const [storesR,categoriesR,homeOrdersR]=await Promise.all([
       supabase.from('stores').select('*').limit(5000),
-      supabase.from('system_categories').select('id,category_key,name_ar,name_ku,name_en,is_active,display_status,sort_order').order('sort_order',{ascending:true}).limit(5000)
+      supabase.from('system_categories').select('id,category_key,name_ar,name_ku,name_en,is_active,display_status,sort_order').order('sort_order',{ascending:true}).limit(5000),
+      supabase.from('home_store_group_store_orders').select('store_id,sort_order').limit(5000)
     ]);
     if (storesR.error) return {ok:false,rows:[],error:storesR.error.message};
+    if(homeOrdersR.error) console.warn('Home group order read unavailable:',homeOrdersR.error.message);
+    const homeOrderMap=new Map((homeOrdersR.data||[]).map(x=>[String(x.store_id),Number(x.sort_order)]));
     storeAdminSystemCategories=(categoriesR.data||[]).filter(c=>c?.is_active!==false);
     const categoryMap=new Map((categoriesR.data||[]).map(c=>[String(c.id),c]));
     const rows=(storesR.data||[]).map(row=>{
       const c=categoryMap.get(String(row.system_category_id||''));
-      return c?{...row,_category_key:c.category_key||'',_category_name_ar:c.name_ar||'',_category_name_ku:c.name_ku||'',_category_name_en:c.name_en||''}:row;
+      const enriched={...row,_home_store_order:homeOrderMap.get(String(row.id))??null};
+      return c?{...enriched,_category_key:c.category_key||'',_category_name_ar:c.name_ar||'',_category_name_ku:c.name_ku||'',_category_name_en:c.name_en||''}:enriched;
     });
     return {ok:true,rows:sortStoresByDisplayOrder(rows)};
   } catch(e) { return {ok:false,rows:[],error:String(e)}; }
@@ -1340,6 +1358,13 @@ function openStoreDetails(row) {
       <button class="primary-btn compact" id="saveStoreDisplayOrder">حفظ ترتيب الظهور</button>
       <div id="storeOrderMessage"></div>
     </div>
+    <div class="review-editor">
+      <div class="panel-head"><div><span>الصفوف الخمسة الجديدة</span><h3>ترتيب المتجر داخل مجموعته</h3></div></div>
+      <p class="panel-note">هذا الترتيب مستقل تماماً عن ترتيب الصفّين في النسخ القديمة.</p>
+      <label>الترتيب الجديد<input id="homeStoreOrderInput" type="number" min="1" max="9999" step="1" value="${row._home_store_order??''}" placeholder="مثال: 1" /></label>
+      <button class="primary-btn compact" id="saveHomeStoreOrder">حفظ ترتيب المجموعة</button>
+      <div id="homeStoreOrderMessage"></div>
+    </div>
     <div class="store-operational-actions">
       <div class="panel-head"><div><span>إدارة التشغيل</span><h3>إجراءات المتجر</h3></div></div>
       <p class="panel-note">قرار المراجعة منفصل عن التشغيل. الإيقاف المؤقت قابل للرجوع، والأرشفة تحفظ تاريخ المتجر عند مغادرته المنصة.</p>
@@ -1377,6 +1402,7 @@ function openStoreDetails(row) {
   document.getElementById('saveStoreReview').addEventListener('click',()=>saveStoreReview(row));
   document.getElementById('saveStoreSystemCategory')?.addEventListener('click',()=>saveStoreSystemCategory(row));
   document.getElementById('saveStoreDisplayOrder')?.addEventListener('click',()=>saveStoreDisplayOrder(row));
+  document.getElementById('saveHomeStoreOrder')?.addEventListener('click',()=>saveHomeStoreOrder(row));
   wireStoreOperationalActions(row);
 }
 async function saveStoreReview(row) {
@@ -1994,6 +2020,7 @@ async function loadSystemData() {
     systemSafeRows('admin_audit_log', 1000),
     systemSafeRows('stores'),
   ]);
+  await loadHomeGroupMappings();
   Object.assign(systemPageState, {
     categories:categories.rows, categoryTable:categories.table,
     clientCategories:clientCategories.rows, clientCategoryTable:clientCategories.table,
@@ -2063,6 +2090,17 @@ function wireSystemOverview(){
   });
 }
 
+let HOME_GROUP_OPTIONS=[];
+function homeGroupSelector(selected){return `<option value="">اختر المجموعة الرئيسية</option>`+HOME_GROUP_OPTIONS.map(([id,label])=>`<option value="${id}" ${selected===id?'selected':''}>${label}</option>`).join('');}
+async function loadHomeGroupMappings(){
+  const groupsResult=await supabase.from('home_store_groups').select('id,title_ar,sort_order').order('sort_order',{ascending:true});
+  if(groupsResult.error){HOME_GROUP_OPTIONS=[];systemPageState.homeGroupsError=groupsResult.error.message;systemPageState.homeGroupMappings={};return;}
+  HOME_GROUP_OPTIONS=(groupsResult.data||[]).map(g=>[String(g.id),String(g.title_ar)]);
+  const {data,error}=await supabase.from('home_store_group_categories').select('category_id,group_id');
+  if(error){systemPageState.homeGroupMappings={};systemPageState.homeGroupsError=error.message;return;}
+  systemPageState.homeGroupMappings=Object.fromEntries((data||[]).map(r=>[String(r.category_id),r.group_id]));
+  systemPageState.homeGroupsError=null;
+}
 function clientCategoryName(r){ return pick(r,['name_ar','name','title'],'تصنيف'); }
 function clientCategoryActive(r){ return systemBool(pick(r,['is_active','active','enabled'],true)); }
 function clientCategoryDisplayStatus(r){
@@ -2085,6 +2123,7 @@ function filteredClientCategoryRows(){
 function renderClientCategories(){
   if(!systemPageState.clientCategoryTable) return `<section class="empty-state compact-empty"><div class="empty-icon">🏠</div><h3>جدول تصنيفات العميل غير جاهز بعد</h3><p>شغّل ملف SQL الخاص بهذه المرحلة مرة واحدة، ثم اضغط تحديث البيانات.</p></section>`;
   const rows=filteredClientCategoryRows();
+  const homeMappings=systemPageState.homeGroupMappings||{};
   const all=systemPageState.clientCategories;
   const editingId=systemPageState.editingClientCategoryId;
   const editing=all.find(r=>String(r.id)===String(editingId||''));
@@ -2098,6 +2137,7 @@ function renderClientCategories(){
   <div class="category-field"><label for="clientCategoryIcon">الأيقونة</label><input id="clientCategoryIcon" type="text" value="${escapeHtml(editing?.icon||'')}" placeholder="مثال: 🍔"><small class="field-hint">يمكنك لصق Emoji مباشرة مثل 🍔 🛒 🍰 ☕ 💐</small></div>
   <div class="category-field category-image-field"><label>صورة التصنيف</label><div class="category-image-upload-row"><input id="clientCategoryImageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button type="button" id="uploadClientCategoryImage" class="secondary-btn compact">⬆ رفع صورة</button></div><input id="clientCategoryImage" type="url" value="${escapeHtml(editing?.image_url||'')}" placeholder="يُملأ الرابط تلقائيًا بعد رفع الصورة"><small class="field-hint">اختر الصورة من الجهاز، وسيتم رفعها إلى Supabase Storage وحفظ الرابط تلقائيًا.</small>${editing?.image_url?`<div class="category-image-preview"><img src="${escapeHtml(editing.image_url)}" alt="صورة التصنيف"></div>`:''}</div>
   <div class="category-field"><label for="clientCategoryColor">اللون</label><input id="clientCategoryColor" type="text" value="${escapeHtml(editing?.color_hex||'#FF7A00')}" placeholder="#FF7A00"></div>
+  <div class="category-field"><label for="clientCategoryHomeGroup">المجموعة الرئيسية للصفوف الخمسة *</label><select id="clientCategoryHomeGroup" required>${homeGroupSelector(editing?homeMappings[String(editing.id)]:'')}</select></div>
   <div class="category-field"><label for="clientCategoryOrder">الترتيب</label><input id="clientCategoryOrder" type="number" min="1" step="1" value="${escapeHtml(String(editing?clientCategoryOrder(editing):all.length+1))}"></div>
   <div class="category-field"><label for="clientCategoryDisplayStatus">حالة الظهور <strong style="color:#ff6b00">(جديد)</strong></label><select id="clientCategoryDisplayStatus"><option value="active" ${!editing||clientCategoryDisplayStatus(editing)==='active'?'selected':''}>فعال</option><option value="coming_soon" ${editing&&clientCategoryDisplayStatus(editing)==='coming_soon'?'selected':''}>قريبًا — يظهر وغير قابل للدخول</option><option value="hidden" ${editing&&clientCategoryDisplayStatus(editing)==='hidden'?'selected':''}>مخفي</option></select></div></div>
   <div class="category-actions"><button id="saveClientCategory" type="submit" class="primary-btn compact">${editing?'✓ حفظ التعديل':'＋ حفظ التصنيف'}</button><button id="cancelClientCategory" type="button" class="secondary-btn compact">إلغاء</button><span id="clientCategoryMessage" class="panel-note" aria-live="polite"></span></div></form></article>
@@ -2173,6 +2213,11 @@ async function saveClientCategory(){
   if(!nameAr){if(msg)msg.textContent='اكتب اسم التصنيف بالعربية.';return;}
   const editId=systemPageState.editingClientCategoryId;
   const status=document.getElementById('clientCategoryDisplayStatus')?.value||'active';
+  const groupId=document.getElementById('clientCategoryHomeGroup')?.value||'';
+  if(!HOME_GROUP_OPTIONS.some(([id])=>id===groupId)){if(msg)msg.textContent='اختر المجموعة الرئيسية أولاً.';return;}
+  // Do not save the legacy category if the new mapping storage is unavailable.
+  if(systemPageState.homeGroupsError){if(msg)msg.textContent='ربط المجموعات غير جاهز في Supabase؛ لم يُحفظ التصنيف: '+systemPageState.homeGroupsError;return;}
+
   const args={
     p_id:editId&&editId!=='__new__'?editId:null,
     p_name_ar:nameAr,
@@ -2185,8 +2230,13 @@ async function saveClientCategory(){
     p_display_status:status
   };
   if(msg)msg.textContent='جارٍ الحفظ...';
-  const {data,error}=await supabase.rpc('admin_save_system_category_v66',args);
-  if(error){if(msg)msg.textContent='تعذر الحفظ: '+error.message;return;}
+  // One database transaction: category + home group either both commit or both roll back.
+  const {data,error}=await supabase.rpc('admin_save_system_category_with_home_group_v1',{
+    ...args,p_group_id:groupId
+  });
+  if(error){if(msg)msg.textContent='تعذر حفظ التصنيف والمجموعة: '+error.message;return;}
+  const categoryId=String(data||'');
+  if(!categoryId){if(msg)msg.textContent='لم يرجع معرّف التصنيف؛ لم يتم تأكيد الحفظ.';return;}
   await systemAudit(editId&&editId!=='__new__'?'edit_client_category':'create_client_category','system_category',data||editId||nameAr,{name_ar:nameAr,display_status:status,sort_order:args.p_sort_order});
   systemPageState.editingClientCategoryId=null;await loadSystemData();renderSystemTab();
 }
