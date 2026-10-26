@@ -1132,13 +1132,20 @@ async function saveStoreSystemCategory(row) {
   btn.disabled=false; btn.textContent='حفظ التصنيف';
   if(error){box.innerHTML=`<div class="alert error">تعذر حفظ التصنيف: ${escapeHtml(error.message)}. شغّل ملف STAGE_65_STORE_CATEGORY_CONTROL.sql مرة واحدة.</div>`;return;}
   const category=storeAdminSystemCategories.find(c=>String(c.id)===categoryId);
+  const previousCategoryId=String(row.system_category_id||'');
   row.system_category_id=categoryId;
+  if(previousCategoryId!==categoryId){
+    const reset=await supabase.rpc('admin_set_home_store_order_v1',{p_store_id:row.id,p_sort_order:0});
+    if(reset.error){
+      box.innerHTML=`<div class="alert warning">تم تغيير التصنيف، لكن تعذر تصفير ترتيب المجموعة الجديد: ${escapeHtml(reset.error.message)}. افتح مجموعات الصفحة الرئيسية واضبط ترتيب المتجر يدوياً.</div>`;
+    }else{row._home_store_order=0;}
+  }
   row._category_key=category?.category_key||'';
   row._category_name_ar=category?.name_ar||'';
   row._category_name_ku=category?.name_ku||'';
   row._category_name_en=category?.name_en||'';
   await systemAudit('update_store_system_category','store',row.id,{system_category_id:categoryId,category_key:row._category_key});
-  box.innerHTML=`<div class="alert success">تم حفظ التصنيف: ${escapeHtml(category?.name_ar||'التصنيف المحدد')}. سيظهر المتجر داخل هذا التصنيف في تطبيق العميل.</div>`;
+  if(!box.innerHTML)box.innerHTML=`<div class="alert success">تم حفظ التصنيف: ${escapeHtml(category?.name_ar||'التصنيف المحدد')}. سيظهر المتجر داخل هذا التصنيف في تطبيق العميل.</div>`;
   applyStoresFilters();
 }
 
@@ -2112,9 +2119,9 @@ function renderHomeGroupsManagement(){
   const selected=systemPageState.homeGroupSelected||HOME_GROUP_OPTIONS[0][0];
   const groupCards=HOME_GROUP_OPTIONS.map(([id,name])=>`<button type="button" class="system-tab ${id===selected?'active':''}" data-home-group-select="${escapeHtml(id)}">${escapeHtml(name)} (${categories.filter(c=>String(mappings[String(c.id)]||'')===id).length} تصنيف)</button>`).join('');
   const categoryRows=categories.map(c=>`<tr><td>${escapeHtml(clientCategoryName(c))}</td><td><select data-home-category="${escapeHtml(String(c.id))}">${homeGroupSelector(mappings[String(c.id)]||'')}</select></td><td><button type="button" class="secondary-btn compact" data-home-category-save="${escapeHtml(String(c.id))}">حفظ المجموعة</button></td></tr>`).join('');
-  const eligible=stores.filter(st=>String(mappings[String(st.system_category_id)]||'')===selected);
+  const eligible=stores.filter(st=>String(mappings[String(st.system_category_id)]||'other')===selected);
   const storeRows=eligible.sort((a,b)=>Number(a._home_store_order??999999)-Number(b._home_store_order??999999)).map(st=>`<tr><td>${escapeHtml(String(st.name_ar||st.name||st.store_name||st.id))}</td><td><input type="number" min="0" step="1" value="${Number(st._home_store_order??0)}" data-home-store-order="${escapeHtml(String(st.id))}" style="width:95px"></td><td><button type="button" class="secondary-btn compact" data-home-store-save="${escapeHtml(String(st.id))}">حفظ الترتيب</button></td></tr>`).join('');
-  return `<section class="panel"><div class="system-section-head"><div><h3>مجموعات الصفحة الرئيسية الخمس</h3><p>اختَر المجموعة لكل تصنيف موجود، ثم رتّب متاجر المجموعة. لا حاجة لإضافة المتاجر أو التصنيفات مرة أخرى. الترتيب القديم لا يتغير.</p></div></div><div id="homeGroupMessage" aria-live="polite"></div><div class="system-tabs">${groupCards}</div><h3>تبعية التصنيفات</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>التصنيف الحالي</th><th>المجموعة الرئيسية</th><th>حفظ</th></tr></thead><tbody>${categoryRows||'<tr><td colspan="3">لا توجد تصنيفات</td></tr>'}</tbody></table></div><h3>ترتيب المتاجر — ${escapeHtml(HOME_GROUP_OPTIONS.find(g=>g[0]===selected)?.[1]||'')}</h3><p>الأرقام الأقل تظهر أولاً. المتاجر تظهر هنا بعد تعيين مجموعة تصنيفها وحفظها.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>المتجر</th><th>ترتيبه الجديد</th><th>حفظ</th></tr></thead><tbody>${storeRows||'<tr><td colspan="3">لا توجد متاجر مرتبطة بهذه المجموعة بعد</td></tr>'}</tbody></table></div></section>`;
+  return `<section class="panel"><div class="system-section-head"><div><h3>مجموعات الصفحة الرئيسية الخمس</h3><p>اختَر المجموعة لكل تصنيف موجود، ثم رتّب متاجر المجموعة. لا حاجة لإضافة المتاجر أو التصنيفات مرة أخرى. الترتيب القديم لا يتغير.</p></div></div><div id="homeGroupMessage" aria-live="polite"></div><div class="system-tabs">${groupCards}</div><h3>تبعية التصنيفات</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>التصنيف الحالي</th><th>المجموعة الرئيسية</th><th>حفظ</th></tr></thead><tbody>${categoryRows||'<tr><td colspan="3">لا توجد تصنيفات</td></tr>'}</tbody></table></div><h3>ترتيب المتاجر — ${escapeHtml(HOME_GROUP_OPTIONS.find(g=>g[0]===selected)?.[1]||'')}</h3><p>الأرقام الأقل تظهر أولاً. التصنيفات غير الموزعة تظهر مؤقتاً ضمن «متاجر أخرى» إلى أن تحدد مجموعتها. الرقم 0 يعني ترتيب تلقائي.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>المتجر</th><th>ترتيبه الجديد</th><th>حفظ</th></tr></thead><tbody>${storeRows||'<tr><td colspan="3">لا توجد متاجر مرتبطة بهذه المجموعة بعد</td></tr>'}</tbody></table></div></section>`;
 }
 function wireHomeGroupsManagement(){
   const msg=document.getElementById('homeGroupMessage');
@@ -2124,7 +2131,7 @@ function wireHomeGroupsManagement(){
     if(!group){msg.textContent='اختر مجموعة رئيسية أولاً';return;}
     b.disabled=true;const {error}=await supabase.rpc('admin_set_home_category_group_v1',{p_category_id:id,p_group_id:group});b.disabled=false;
     if(error){msg.textContent='فشل حفظ المجموعة: '+error.message;return;}
-    systemPageState.homeGroupMappings[id]=group;msg.textContent='تم حفظ المجموعة بنجاح';renderSystemTab();
+    systemPageState.homeGroupMappings[id]=group;await loadSystemData();renderSystemTab();
   }));
   document.querySelectorAll('[data-home-store-save]').forEach(b=>b.addEventListener('click',async()=>{
     const id=b.dataset.homeStoreSave, input=document.querySelector(`[data-home-store-order="${id}"]`), order=Number(input?.value);
@@ -2132,7 +2139,7 @@ function wireHomeGroupsManagement(){
     b.disabled=true;const {error}=await supabase.rpc('admin_set_home_store_order_v1',{p_store_id:id,p_sort_order:order});b.disabled=false;
     if(error){msg.textContent='فشل حفظ الترتيب: '+error.message;return;}
     const st=(systemPageState.stores||[]).find(x=>String(x.id)===id);if(st)st._home_store_order=order;
-    msg.textContent='تم حفظ ترتيب المتجر';renderSystemTab();
+    await loadSystemData();renderSystemTab();
   }));
 }
 function clientCategoryName(r){ return pick(r,['name_ar','name','title'],'تصنيف'); }
