@@ -20,45 +20,14 @@ export const supabase = isSupabaseConfigured()
     })
   : null;
 
-function metadataIsAdmin(user) {
-  const wanted = String(APP_CONFIG.adminRoleValue || 'admin').toLowerCase();
-  const values = [
-    user?.app_metadata?.role,
-    user?.user_metadata?.role,
-    user?.app_metadata?.user_role,
-    user?.user_metadata?.user_role,
-  ];
-  return values.some((v) => String(v || '').toLowerCase() === wanted);
-}
-
-async function tableIsAdmin(user) {
-  if (!supabase || !user) return false;
-
-  const table = APP_CONFIG.adminTable;
-  const userIdColumn = APP_CONFIG.adminUserIdColumn;
-  const roleColumn = APP_CONFIG.adminRoleColumn;
-  const roleValue = APP_CONFIG.adminRoleValue;
-
-  if (!table || !userIdColumn || !roleColumn || !roleValue) return false;
-
-  const { data, error } = await supabase
-    .from(table)
-    .select(`${userIdColumn}, ${roleColumn}`)
-    .eq(userIdColumn, user.id)
-    .eq(roleColumn, roleValue)
-    .maybeSingle();
-
+// Always verify admin privileges on the server. User-editable metadata must
+// never grant access to the admin dashboard.
+export async function verifyAdmin(user) {
+  if (!supabase || !user?.id) return false;
+  const { data, error } = await supabase.rpc('hala_is_admin');
   if (error) {
-    console.warn('Admin table check skipped/failed:', error.message);
+    console.warn('Admin verification failed:', error.message);
     return false;
   }
-  return Boolean(data);
-}
-
-export async function verifyAdmin(user) {
-  const mode = APP_CONFIG.adminCheckMode || 'either';
-  if (mode === 'metadata') return metadataIsAdmin(user);
-  if (mode === 'table') return tableIsAdmin(user);
-  if (metadataIsAdmin(user)) return true;
-  return tableIsAdmin(user);
+  return data === true;
 }
