@@ -423,25 +423,47 @@ async function loadDashboardData() {
   let dateField = null;
 
   if (ordersAll.ok) {
-    const all = await loadAllRows(ordersAll.table, 5000);
-    if (all.ok) {
-      orderRows = all.rows;
-      dateField = detectDateField(orderRows);
-      if (dateField) {
-        const todayRows = orderRows.filter(r => isTodayLocal(r[dateField]));
-        todayOrders = { ok:true, count:todayRows.length, table:ordersAll.table, source:dateField };
-        revenue = todayRows.reduce((sum,row)=>sum + numericPick(row,['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
-        recent = {
-          ok:true,
-          table:ordersAll.table,
-          rows:[...orderRows].sort((a,b)=>new Date(b?.[dateField]||0)-new Date(a?.[dateField]||0)).slice(0,8)
-        };
-      } else {
-        // Orders are readable but the current schema has no usable timestamp column.
-        todayOrders = { ok:false, count:null, table:ordersAll.table, source:null, error:'no_date_field' };
-        recent = { ok:true, table:ordersAll.table, rows:orderRows.slice(-8).reverse() };
-      }
+    // Count today's orders on the server, not from a capped first page.
+    // Business operates in Iraq (UTC+03:00), regardless of admin device timezone.
+    const now = new Date();
+    const iraqDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone:'Asia/Baghdad', year:'numeric', month:'2-digit', day:'2-digit'
+    }).format(now);
+    const [year, month, day] = iraqDate.split('-').map(Number);
+    const start = new Date(Date.UTC(year, month - 1, day, -3)).toISOString();
+    const end = new Date(Date.UTC(year, month - 1, day + 1, -3)).toISOString();
+    // created_at is the canonical order creation timestamp.
+    dateField = 'created_at';
+    const todayCount = await countTable(ordersAll.table, q => q.gte(dateField,start).lt(dateField,end));
+    if (todayCount.ok) {
+      todayOrders = { ok:true, count:todayCount.count, table:ordersAll.table, source:dateField };
+    } else {
+      todayOrders = { ok:false, count:null, table:ordersAll.table, source:dateField, error:todayCount.error };
     }
+    const recentResult = await supabase.from(ordersAll.table).select('*')
+      .order(dateField,{ascending:false}).limit(8);
+    if (!recentResult.error) recent = {ok:true,table:ordersAll.table,rows:recentResult.data || []};
+
+    // Today's sales must also use today's records, not a truncated all-time sample.
+    // Fetch in bounded pages so Supabase's per-request max rows does not truncate it.
+    if (todayCount.ok) {
+      let offset = 0;
+      let revenueOk = true;
+      const pageSize = 500;
+      while (offset < todayCount.count) {
+        const result = await supabase.from(ordersAll.table).select('*')
+          .gte(dateField,start).lt(dateField,end)
+          .order(dateField,{ascending:false})
+          .range(offset,offset + pageSize - 1);
+        if (result.error) { revenueOk = false; break; }
+        const rows = result.data || [];
+        revenue += rows.reduce((sum,row)=>sum + numericPick(row,
+          ['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
+        if (!rows.length) { revenueOk = false; break; }
+        offset += rows.length;
+      }
+      if (!revenueOk) revenue = null;
+    } else revenue = null;
   }
 
   const drivers = ordersAll.ok
@@ -768,7 +790,7 @@ async function renderStageTwoDashboard() {
     <section class="metrics-grid polish-metrics">
       ${metricCard('طلبات اليوم',d.todayOrders.ok?fmtNumber(d.todayOrders.count):'—','طلبات مسجلة اليوم','🧾')}
       ${metricCard('طلبات نشطة',fmtNumber(d.activeOrders),'لم تُسلّم أو تُلغَ بعد','📦')}
-      ${metricCard('مبيعات اليوم',fmtMoney(d.revenue),'إجمالي قيمة طلبات اليوم','💰')}
+      ${metricCard('مبيعات اليوم',d.revenue===null?'—':fmtMoney(d.revenue),'إجمالي قيمة طلبات اليوم','💰')}
       ${metricCard('المتاجر',d.stores.ok?fmtNumber(d.stores.count):'—','المتاجر المسجلة','🏪')}
       ${metricCard('السائقون',d.drivers.ok?fmtNumber(d.drivers.count):'—','سائقون ظهروا في الطلبات','🚚')}
     </section>
