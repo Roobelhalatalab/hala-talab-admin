@@ -857,9 +857,20 @@ function paymentStatusLabel(v) { const s=String(v||'').toLowerCase(); return ({p
 
 async function fetchOrdersForAdmin() {
   try {
-    const { data, error } = await supabase.from('orders').select('*').limit(5000);
-    if (error) return { ok:false, rows:[], error:error.message };
-    const rows = data || [];
+    // Supabase may cap each response at 1,000 rows regardless of .limit().
+    // Fetch ordered pages so new orders are never excluded by that cap.
+    const rows = [];
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await supabase.from('orders')
+        .select('*')
+        .order('created_at', { ascending:false })
+        .order('id', { ascending:false })
+        .range(offset, offset + pageSize - 1);
+      if (error) return { ok:false, rows:[], error:error.message };
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+    }
     const dateField = detectDateField(rows);
     if (dateField) rows.sort((a,b)=>new Date(b?.[dateField]||0)-new Date(a?.[dateField]||0));
     const statusField = rows.some(r => Object.prototype.hasOwnProperty.call(r,'status')) ? 'status' : (rows.some(r => Object.prototype.hasOwnProperty.call(r,'order_status')) ? 'order_status' : 'status');
