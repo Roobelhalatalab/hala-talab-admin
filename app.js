@@ -856,16 +856,37 @@ function driverLabel(row) {
 function paymentMethodLabel(v) { const s=String(v||'').toLowerCase(); return ({cash:'نقدًا',card:'بطاقة',online:'دفع إلكتروني'})[s] || v || 'غير محدد'; }
 function paymentStatusLabel(v) { const s=String(v||'').toLowerCase(); return ({pending:'معلّق',paid:'مدفوع',failed:'فشل',refunded:'مسترجع'})[s] || v || 'غير محدد'; }
 
+// Read newest orders first. A failure in an older page must not hide recent orders.
 async function fetchOrdersForAdmin() {
-  try {
-    const { data, error } = await supabase.from('orders').select('*').limit(5000);
-    if (error) return { ok:false, rows:[], error:error.message };
-    const rows = data || [];
-    const dateField = detectDateField(rows);
-    if (dateField) rows.sort((a,b)=>new Date(b?.[dateField]||0)-new Date(a?.[dateField]||0));
-    const statusField = rows.some(r => Object.prototype.hasOwnProperty.call(r,'status')) ? 'status' : (rows.some(r => Object.prototype.hasOwnProperty.call(r,'order_status')) ? 'order_status' : 'status');
-    return { ok:true, rows, dateField, statusField };
-  } catch (e) { return { ok:false, rows:[], error:String(e) }; }
+  const pageSize = 500;
+  const maxPages = 200;
+  const rows = [];
+  let warning = '';
+  for (let page = 0; page < maxPages; page++) {
+    try {
+      const { data, error } = await supabase.from('orders')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(page * pageSize, (page + 1) * pageSize - 1);
+      if (error) {
+        if (!rows.length) return { ok:false, rows:[], error:error.message };
+        warning = `تعذر تحميل بعض الطلبات الأقدم: ${error.message}`;
+        break;
+      }
+      const batch = data || [];
+      rows.push(...batch);
+      if (batch.length < pageSize) break;
+      if (page === maxPages - 1) warning = 'تم الوصول إلى حد تحميل السجل؛ قد توجد طلبات أقدم.';
+    } catch (e) {
+      if (!rows.length) return { ok:false, rows:[], error:String(e) };
+      warning = `تعذر تحميل بعض الطلبات الأقدم: ${String(e)}`;
+      break;
+    }
+  }
+  const dateField = detectDateField(rows);
+  const statusField = rows.some(r => Object.prototype.hasOwnProperty.call(r,'status')) ? 'status' :
+    (rows.some(r => Object.prototype.hasOwnProperty.call(r,'order_status')) ? 'order_status' : 'status');
+  return { ok:true, rows, dateField, statusField, warning };
 }
 
 function renderOrdersRows(rows) {
@@ -994,6 +1015,7 @@ async function renderOrdersPage() {
       <label class="compact-filter"><span>الفترة</span><select id="ordersDateFilter"><option value="all">كل التواريخ</option><option value="today">اليوم</option><option value="7d">آخر 7 أيام</option><option value="30d">آخر 30 يومًا</option></select></label>
       <span id="ordersResultCount" class="tag">${fmtNumber(r.rows.length)} طلب</span>
     </section>
+    ${r.warning ? `<div role="alert" class="panel" style="padding:12px;color:#9a5100">${escapeHtml(r.warning)}</div>` : ''}
     <article class="panel orders-panel"><div class="table-wrap"><table class="data-table orders-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المتجر</th><th>السائق</th><th>الحالة</th><th>الإجمالي</th><th>الوقت</th><th></th></tr></thead><tbody id="ordersTableBody">${renderOrdersRows(r.rows)}</tbody></table></div></article>`;
   ['ordersSearch','ordersStoreFilter','ordersStatusFilter','ordersDateFilter'].forEach(id=>document.getElementById(id)?.addEventListener(id==='ordersSearch'?'input':'change',applyOrdersFilters));
   document.getElementById('refreshOrders')?.addEventListener('click',renderOrdersPage);
