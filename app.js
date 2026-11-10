@@ -424,32 +424,43 @@ async function loadDashboardData() {
   let dateField = null;
 
   if (ordersAll.ok) {
-    // Query today's records at source, not an arbitrary capped historical page.
-    const startDate = new Date(); startDate.setHours(0,0,0,0);
-    const endDate = new Date(startDate); endDate.setDate(endDate.getDate()+1);
-    const startIso=startDate.toISOString(), endIso=endDate.toISOString();
-    dateField='created_at';
+    // Read only today's orders from Supabase; historical first-page results
+    // must never determine today's totals.
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const nextDay = new Date(dayStart);
+    nextDay.setDate(nextDay.getDate() + 1);
+    const startIso = dayStart.toISOString();
+    const endIso = nextDay.toISOString();
+    dateField = 'created_at';
     try {
-      const {count,error:countError}=await supabase.from(ordersAll.table)
-        .select('id',{count:'exact',head:true}).gte('created_at',startIso).lt('created_at',endIso);
-      todayOrders=countError
-        ? {ok:false,count:null,table:ordersAll.table,source:'created_at',error:countError.message}
-        : {ok:true,count:count||0,table:ordersAll.table,source:'created_at'};
-      let sum=0, revenueOk=true;
-      for(let offset=0;offset<100000;offset+=500){
-        const {data,error}=await supabase.from(ordersAll.table).select('*')
+      const {count, error: countError} = await supabase.from(ordersAll.table)
+        .select('id', {count:'exact', head:true})
+        .gte('created_at', startIso).lt('created_at', endIso);
+      todayOrders = countError
+        ? {ok:false,count:null,table:ordersAll.table,source:dateField,error:countError.message}
+        : {ok:true,count:count||0,table:ordersAll.table,source:dateField};
+
+      let total = 0;
+      let revenueError = null;
+      for (let offset=0; offset<100000; offset+=500) {
+        const {data,error} = await supabase.from(ordersAll.table).select('*')
           .gte('created_at',startIso).lt('created_at',endIso)
           .order('created_at',{ascending:false}).range(offset,offset+499);
-        if(error){revenueOk=false;break;}
-        const batch=data||[];
-        sum+=batch.reduce((acc,row)=>acc+numericPick(row,['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
-        if(batch.length<500)break;
+        if(error) { revenueError=error; break; }
+        const rows=data||[];
+        total += rows.reduce((sum,row)=>sum+numericPick(row,
+          ['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
+        if(rows.length<500) break;
       }
-      revenue=revenueOk?sum:null;
-      const {data:newest,error:recentError}=await supabase.from(ordersAll.table).select('*')
-        .order('created_at',{ascending:false}).limit(8);
-      if(!recentError)recent={ok:true,table:ordersAll.table,rows:newest||[]};
-    }catch(e){todayOrders={ok:false,count:null,table:ordersAll.table,source:'created_at',error:String(e)};revenue=null;}
+      revenue = revenueError ? null : total;
+      const {data:latest,error:latestError} = await supabase.from(ordersAll.table)
+        .select('*').order('created_at',{ascending:false}).limit(8);
+      if(!latestError) recent={ok:true,table:ordersAll.table,rows:latest||[]};
+    } catch(e) {
+      todayOrders={ok:false,count:null,table:ordersAll.table,source:dateField,error:String(e)};
+      revenue=null;
+    }
   }
 
   const drivers = ordersAll.ok
