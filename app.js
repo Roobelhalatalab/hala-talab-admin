@@ -63,7 +63,7 @@ async function deactivateCurrentPushDevice() {
 }
 
 const icons = {
-  dashboard: '▦', orders: '🧾', stores: '🏪', drivers: '🚚', users: '👥',
+  dashboard: '▦', orders: '🧾', stores: '🏪', zones: '🗺️', drivers: '🚚', users: '👥',
   reports: '📊', monitor: '📡', system: '⚙', settings: '🛡️', logout: '↪', menu: '☰', bell: '🔔'
 };
 
@@ -71,6 +71,7 @@ const navItems = [
   ['dashboard', 'لوحة المتابعة اليومية'],
   ['orders', 'الطلبات'],
   ['stores', 'المتاجر / المطاعم'],
+  ['zones', 'رسم حدود الزونات'],
   ['drivers', 'السائقون'],
   ['users', 'المستخدمون'],
   ['reports', 'التقارير والتحليلات'],
@@ -423,47 +424,25 @@ async function loadDashboardData() {
   let dateField = null;
 
   if (ordersAll.ok) {
-    // Count today's orders on the server, not from a capped first page.
-    // Business operates in Iraq (UTC+03:00), regardless of admin device timezone.
-    const now = new Date();
-    const iraqDate = new Intl.DateTimeFormat('en-CA', {
-      timeZone:'Asia/Baghdad', year:'numeric', month:'2-digit', day:'2-digit'
-    }).format(now);
-    const [year, month, day] = iraqDate.split('-').map(Number);
-    const start = new Date(Date.UTC(year, month - 1, day, -3)).toISOString();
-    const end = new Date(Date.UTC(year, month - 1, day + 1, -3)).toISOString();
-    // created_at is the canonical order creation timestamp.
-    dateField = 'created_at';
-    const todayCount = await countTable(ordersAll.table, q => q.gte(dateField,start).lt(dateField,end));
-    if (todayCount.ok) {
-      todayOrders = { ok:true, count:todayCount.count, table:ordersAll.table, source:dateField };
-    } else {
-      todayOrders = { ok:false, count:null, table:ordersAll.table, source:dateField, error:todayCount.error };
-    }
-    const recentResult = await supabase.from(ordersAll.table).select('*')
-      .order(dateField,{ascending:false}).limit(8);
-    if (!recentResult.error) recent = {ok:true,table:ordersAll.table,rows:recentResult.data || []};
-
-    // Today's sales must also use today's records, not a truncated all-time sample.
-    // Fetch in bounded pages so Supabase's per-request max rows does not truncate it.
-    if (todayCount.ok) {
-      let offset = 0;
-      let revenueOk = true;
-      const pageSize = 500;
-      while (offset < todayCount.count) {
-        const result = await supabase.from(ordersAll.table).select('*')
-          .gte(dateField,start).lt(dateField,end)
-          .order(dateField,{ascending:false})
-          .range(offset,offset + pageSize - 1);
-        if (result.error) { revenueOk = false; break; }
-        const rows = result.data || [];
-        revenue += rows.reduce((sum,row)=>sum + numericPick(row,
-          ['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
-        if (!rows.length) { revenueOk = false; break; }
-        offset += rows.length;
+    const all = await loadAllRows(ordersAll.table, 5000);
+    if (all.ok) {
+      orderRows = all.rows;
+      dateField = detectDateField(orderRows);
+      if (dateField) {
+        const todayRows = orderRows.filter(r => isTodayLocal(r[dateField]));
+        todayOrders = { ok:true, count:todayRows.length, table:ordersAll.table, source:dateField };
+        revenue = todayRows.reduce((sum,row)=>sum + numericPick(row,['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
+        recent = {
+          ok:true,
+          table:ordersAll.table,
+          rows:[...orderRows].sort((a,b)=>new Date(b?.[dateField]||0)-new Date(a?.[dateField]||0)).slice(0,8)
+        };
+      } else {
+        // Orders are readable but the current schema has no usable timestamp column.
+        todayOrders = { ok:false, count:null, table:ordersAll.table, source:null, error:'no_date_field' };
+        recent = { ok:true, table:ordersAll.table, rows:orderRows.slice(-8).reverse() };
       }
-      if (!revenueOk) revenue = null;
-    } else revenue = null;
+    }
   }
 
   const drivers = ordersAll.ok
@@ -790,7 +769,7 @@ async function renderStageTwoDashboard() {
     <section class="metrics-grid polish-metrics">
       ${metricCard('طلبات اليوم',d.todayOrders.ok?fmtNumber(d.todayOrders.count):'—','طلبات مسجلة اليوم','🧾')}
       ${metricCard('طلبات نشطة',fmtNumber(d.activeOrders),'لم تُسلّم أو تُلغَ بعد','📦')}
-      ${metricCard('مبيعات اليوم',d.revenue===null?'—':fmtMoney(d.revenue),'إجمالي قيمة طلبات اليوم','💰')}
+      ${metricCard('مبيعات اليوم',fmtMoney(d.revenue),'إجمالي قيمة طلبات اليوم','💰')}
       ${metricCard('المتاجر',d.stores.ok?fmtNumber(d.stores.count):'—','المتاجر المسجلة','🏪')}
       ${metricCard('السائقون',d.drivers.ok?fmtNumber(d.drivers.count):'—','سائقون ظهروا في الطلبات','🚚')}
     </section>
@@ -879,20 +858,9 @@ function paymentStatusLabel(v) { const s=String(v||'').toLowerCase(); return ({p
 
 async function fetchOrdersForAdmin() {
   try {
-    // Supabase may cap each response at 1,000 rows regardless of .limit().
-    // Fetch ordered pages so new orders are never excluded by that cap.
-    const rows = [];
-    const pageSize = 500;
-    for (let offset = 0; ; offset += pageSize) {
-      const { data, error } = await supabase.from('orders')
-        .select('*')
-        .order('created_at', { ascending:false })
-        .order('id', { ascending:false })
-        .range(offset, offset + pageSize - 1);
-      if (error) return { ok:false, rows:[], error:error.message };
-      rows.push(...(data || []));
-      if (!data || data.length < pageSize) break;
-    }
+    const { data, error } = await supabase.from('orders').select('*').limit(5000);
+    if (error) return { ok:false, rows:[], error:error.message };
+    const rows = data || [];
     const dateField = detectDateField(rows);
     if (dateField) rows.sort((a,b)=>new Date(b?.[dateField]||0)-new Date(a?.[dateField]||0));
     const statusField = rows.some(r => Object.prototype.hasOwnProperty.call(r,'status')) ? 'status' : (rows.some(r => Object.prototype.hasOwnProperty.call(r,'order_status')) ? 'order_status' : 'status');
@@ -1048,7 +1016,9 @@ async function renderOrdersPage() {
 const STORE_REVIEW_OPTIONS = [
   ['pending','قيد المراجعة'], ['approved','مقبول'], ['rejected','مرفوض'], ['suspended','معلّق']
 ];
-let storesPageState = { rows:[], filtered:[], reviews:new Map(), owners:new Map(), controls:new Map(), categories:[], selected:null, section:'restaurants' };
+let storesPageState = { rows:[], filtered:[], reviews:new Map(), owners:new Map(), controls:new Map(), categories:[], selected:null, section:'restaurants', zone:'all' };
+let adminZoneCatalog = [];
+function storeZoneLabel(row){const zone=adminZoneCatalog.find(z=>String(z.id)===String(row.zone_id||''));return zone?.name||'غير محدد';}
 
 function storeReviewLabel(value='pending') {
   const s=String(value||'pending').toLowerCase();
@@ -1247,6 +1217,7 @@ function applyStoresFilters() {
   const q=(document.getElementById('storesSearch')?.value||'').trim().toLowerCase();
   const reviewStatus=document.getElementById('storesReviewFilter')?.value||'all';
   let rows=sortStoresByDisplayOrder(storesPageState.rows).filter(r=>storeSection(r)===storesPageState.section);
+  if(storesPageState.zone!=='all') rows=rows.filter(r=>String(r.zone_id||'')===storesPageState.zone);
   if(q) rows=rows.filter(r=>storeSearchText(r).includes(q));
   if(reviewStatus!=='all') rows=rows.filter(r=>String(reviewForStore(r).review_status||'pending')===reviewStatus);
   storesPageState.filtered=rows;
@@ -1377,12 +1348,20 @@ function openStoreDetails(row) {
       ${detailItem('هاتف المتجر',pick(row,['phone'],'غير متوفر'))}
       ${detailItem('هاتف صاحب الحساب',ownerPhoneForStore(row))}
       ${detailItem('البريد',pick(owner,['email'],'غير متوفر'))}
+      ${detailItem('الزون الأصلي',storeZoneLabel(row))}
       ${detailItem('القسم',storeSectionLabel(row))}${detailItem('التصنيف',storeCategory(row))}
       ${detailItem('ترتيب الظهور',storeDisplayOrder(row)??'غير محدد')}
       ${detailItem('الحالة التشغيلية',`<span class=\"operational-pill ${storeOperationalClass(row)}\">${escapeHtml(storeOperationalStatus(row))}</span>`,true)}
       ${detailItem('مفعّل',storeBooleanLabel(pick(row,['is_active','active','enabled'],null)))}
       ${detailItem('العنوان',storeAddress(row))}
       ${detailItem('الوصف',pick(row,['description','bio','about'],'غير متوفر'))}
+    </div>
+    <div class="review-editor">
+      <div class="panel-head"><div><span>إدارة المناطق</span><h3>الزون الأصلي للمتجر</h3></div></div>
+      <p class="panel-note">هذا هو موقع المتجر الإداري، وليس قائمة المناطق التي يوصل إليها. تغيير الزون قد يغيّر تصنيف المتجر المحلي والخارجي عند العملاء.</p>
+      <label>الزون الأصلي<select id="storeOriginZoneSelect">${adminZoneCatalog.filter(z=>z.is_active!==false || String(z.id)===String(row.zone_id)).map(z=>`<option value="${escapeHtml(String(z.id))}" ${String(z.id)===String(row.zone_id)?'selected':''}>${escapeHtml(z.name)}</option>`).join('')}</select></label>
+      <button type="button" class="primary-btn compact" id="saveStoreOriginZone">حفظ الزون الأصلي</button>
+      <div id="storeOriginZoneMessage"></div>
     </div>
     <div class="review-editor">
       <div class="panel-head"><div><span>تطبيق العميل</span><h3>التصنيف الرئيسي للمتجر</h3></div></div>
@@ -1439,11 +1418,57 @@ function openStoreDetails(row) {
   </section>`;
   document.body.appendChild(overlay);
   const close=()=>overlay.remove(); document.getElementById('closeStoreModal').addEventListener('click',close); overlay.addEventListener('click',e=>{if(e.target===overlay)close();});
+  document.getElementById('saveStoreOriginZone')?.addEventListener('click',()=>saveStoreOriginZone(row));
   document.getElementById('saveStoreReview').addEventListener('click',()=>saveStoreReview(row));
   document.getElementById('saveStoreSystemCategory')?.addEventListener('click',()=>saveStoreSystemCategory(row));
   document.getElementById('saveStoreDisplayOrder')?.addEventListener('click',()=>saveStoreDisplayOrder(row));
   document.getElementById('saveHomeStoreOrder')?.addEventListener('click',()=>saveHomeStoreOrder(row));
   wireStoreOperationalActions(row);
+}
+async function saveStoreOriginZone(row) {
+  const select=document.getElementById('storeOriginZoneSelect');
+  const button=document.getElementById('saveStoreOriginZone');
+  const message=document.getElementById('storeOriginZoneMessage');
+  const target=select?.value;
+  if(!target || !adminZoneCatalog.some(z=>String(z.id)===target)) {
+    message.innerHTML='<div class="alert error">اختَر زوناً صحيحاً.</div>';return;
+  }
+  if(String(row.zone_id||'')===target) {
+    message.innerHTML='<div class="alert success">المتجر موجود أصلاً بهذا الزون.</div>';return;
+  }
+  const targetName=adminZoneCatalog.find(z=>String(z.id)===target)?.name||'';
+  // Preview must succeed before changing the store's origin zone.
+  button.disabled=true;
+  message.textContent='جارٍ فحص مناطق التوصيل المتأثرة...';
+  let preview;
+  try {
+    const {data,error}=await supabase.rpc('hala_admin_preview_store_zone_coverage_v1',{
+      p_store_id:row.id,p_target_zone_id:target
+    });
+    if(error)throw error;
+    if(!data || !Array.isArray(data.enabled_areas) || !data.coverage_fingerprint)throw new Error('بيانات المعاينة غير مكتملة');
+    preview=data;
+  } catch(err) {
+    button.disabled=false;
+    message.innerHTML=`<div class="alert error">تعذرت معاينة مناطق التوصيل، لذلك لم يتغير الزون: ${escapeHtml(err.message||String(err))}. تأكد من تنفيذ SQL المرحلة 18.</div>`;
+    return;
+  }
+  const enabled=preview.enabled_areas;
+  const previewLines=enabled.map(a=>`${a.area_name} (${a.zone_name}) — ${Number(a.delivery_fee||0).toLocaleString('en-US')} د.ع — ${a.will_be_external?'خارجية':'محلية'}`);
+  const promptText=`نقل «${storeName(row)}» إلى «${targetName}»؟\n\nمناطق التوصيل المفعّلة ستبقى كما هي بعد النقل:\n${previewLines.length?previewLines.join('\n'):'لا توجد مناطق توصيل مفعّلة'}\n\nهل تؤكد النقل؟`;
+  if(!window.confirm(promptText)) {
+    button.disabled=false;
+    message.innerHTML='<div class="alert">تم إلغاء النقل. لم تتغير أي بيانات.</div>';
+    return;
+  }
+  button.disabled=true;
+  message.textContent='جارٍ الحفظ...';
+  const {error}=await supabase.rpc('hala_admin_confirm_store_zone_move_v2',{p_store_id:row.id,p_target_zone_id:target,p_expected_origin_zone_id:preview.origin_zone_id,p_expected_coverage_fingerprint:preview.coverage_fingerprint});
+  button.disabled=false;
+  if(error){message.innerHTML=`<div class="alert error">تعذر تغيير الزون: ${escapeHtml(error.message)}</div>`;return;}
+  row.zone_id=target;
+  message.innerHTML='<div class="alert success">تم تحديث الزون الأصلي. راجع إعدادات التوصيل الخاصة بالمتجر بعد التغيير.</div>';
+  applyStoresFilters();
 }
 async function saveStoreReview(row) {
   const status=document.getElementById('storeReviewStatus')?.value||'pending';
@@ -1460,7 +1485,8 @@ async function saveStoreReview(row) {
 async function renderStoresPage() {
   const content=document.getElementById('content');
   content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل المتاجر...</h2><p>يتم قراءة جدول stores ومراجعات الإدارة من Supabase.</p></section>`;
-  const [storesR,lookups]=await Promise.all([fetchStoresAdmin(),loadStoreAdminLookups()]);
+  const [storesR,lookups,zonesR]=await Promise.all([fetchStoresAdmin(),loadStoreAdminLookups(),supabase.from('hala_zones').select('id,name,is_active').order('name')]);
+  adminZoneCatalog=zonesR.error?[]:(zonesR.data||[]);
   if(!storesR.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">🏪</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة المتاجر</h2><p>${escapeHtml(storesR.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage4_rls.sql</b> ثم أعد المحاولة.</p></section>`;return;}
   storesPageState={rows:sortStoresByDisplayOrder(storesR.rows),filtered:[],reviews:lookups.reviews,owners:lookups.owners,controls:lookups.controls||new Map(),categories:storeAdminSystemCategories,selected:null,section:'restaurants'};
   const counts={pending:0,approved:0,rejected:0,suspended:0}; storesR.rows.forEach(r=>{const s=reviewForStore(r).review_status||'pending'; if(counts[s]!==undefined)counts[s]++;});
@@ -1472,6 +1498,7 @@ async function renderStoresPage() {
       <button type="button" class="system-tab active" data-store-section="restaurants">🍽️ المطاعم <span>${fmtNumber(restaurantCount)}</span></button>
       <button type="button" class="system-tab" data-store-section="stores">🏪 المتاجر <span>${fmtNumber(storeCount)}</span></button>
     </section>
+    <section class="stores-toolbar" style="margin-bottom:12px"><strong>منطقة المتجر الأصلية</strong><select id="storesZoneFilter"><option value="all">جميع المناطق</option>${adminZoneCatalog.map(z=>`<option value="${escapeHtml(String(z.id))}">متاجر ${escapeHtml(z.name)}</option>`).join('')}</select><span class="tag">المتاجر الخارجية تبقى تابعة لمنطقتها الأصلية</span></section>
     <section class="store-summary-grid">
       ${actionMetricCard('إجمالي الحسابات',fmtNumber(storesR.rows.length),'مطاعم ومتاجر','🏪','stores','all')}
       ${actionMetricCard('قيد المراجعة',fmtNumber(counts.pending),'لم يُتخذ قرار إداري بعد','🕒','stores','pending')}
@@ -1488,6 +1515,7 @@ async function renderStoresPage() {
   document.getElementById('refreshStores')?.addEventListener('click',renderStoresPage);
   document.getElementById('storesSearch')?.addEventListener('input',applyStoresFilters);
   document.getElementById('storesReviewFilter')?.addEventListener('change',applyStoresFilters);
+  document.getElementById('storesZoneFilter')?.addEventListener('change',e=>{storesPageState.zone=e.target.value;applyStoresFilters();});
   document.querySelectorAll('[data-store-section]').forEach(btn=>btn.addEventListener('click',()=>{storesPageState.section=btn.dataset.storeSection||'restaurants';applyStoresFilters();}));
   applyStoresFilters();
   consumePendingAdminTarget('stores');
@@ -1754,6 +1782,7 @@ async function renderUsersPage() {
   const suspendedCount=r.rows.filter(x=>x.access_status==='suspended').length;
   const activeCount=r.rows.length-suspendedCount;
   content.innerHTML=`<section class="dashboard-hero"><div><span class="pill">إدارة يومية</span><h2>المستخدمون / العملاء</h2><p>هذه الصفحة مخصصة للعملاء فقط. المتاجر تظهر في قسم المتاجر والسائقون في قسم السائقين بدون تكرار.</p></div><button id="refreshUsers" class="secondary-btn">↻ تحديث العملاء</button></section>
+    <section class="stores-toolbar" style="margin-bottom:12px"><strong>منطقة المتجر الأصلية</strong><select id="storesZoneFilter"><option value="all">جميع المناطق</option>${adminZoneCatalog.map(z=>`<option value="${escapeHtml(String(z.id))}">متاجر ${escapeHtml(z.name)}</option>`).join('')}</select><span class="tag">المتاجر الخارجية تبقى تابعة لمنطقتها الأصلية</span></section>
     <section class="store-summary-grid">${actionMetricCard('إجمالي العملاء',fmtNumber(r.rows.length),'حسابات العملاء فقط','👥','users','all')}${actionMetricCard('نشطون',fmtNumber(activeCount),'حسابات العملاء المتاحة','✅','users-access','active')}${actionMetricCard('موقوفون',fmtNumber(suspendedCount),'إيقاف إداري مؤقت','⏸️','users-access','suspended')}</section>
     <section class="stores-toolbar"><label class="search-box">🔎<input id="usersSearch" type="search" placeholder="ابحث باسم العميل، البريد، الهاتف..." /></label><select id="usersAccessFilter"><option value="all">كل حالات المتابعة</option>${USER_ACCESS_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select><span id="usersResultCount" class="tag">${fmtNumber(r.rows.length)} عميل</span></section>
     <article class="panel stores-panel"><div class="table-wrap"><table class="data-table users-table"><thead><tr><th>العميل</th><th>نوع الحساب</th><th>صلاحية الإدارة</th><th>الحالة</th><th>آخر دخول</th><th></th></tr></thead><tbody id="usersTableBody">${renderUserRows(r.rows)}</tbody></table></div></article>`;
@@ -3392,7 +3421,7 @@ function renderRealtimeMonitorPage(){
 function wireDashboard() {
   const sidebar=document.getElementById('sidebar'), overlay=document.getElementById('sidebarOverlay'); const close=()=>{sidebar.classList.remove('open');overlay.classList.remove('show');};
   document.getElementById('menuBtn')?.addEventListener('click',()=>{sidebar.classList.toggle('open');overlay.classList.toggle('show');}); overlay.addEventListener('click',close);
-  document.querySelectorAll('.nav-item[data-page]').forEach(btn=>btn.addEventListener('click',()=>{stopRealtimeMonitorAutoRefresh();document.querySelectorAll('.nav-item[data-page]').forEach(x=>x.classList.remove('active'));btn.classList.add('active');const label=btn.textContent.trim();document.getElementById('pageTitle').textContent=label;btn.dataset.page==='dashboard'?renderStageTwoDashboard():btn.dataset.page==='orders'?renderOrdersPage():btn.dataset.page==='stores'?renderStoresPage():btn.dataset.page==='drivers'?renderDriversPage():btn.dataset.page==='users'?renderUsersPage():btn.dataset.page==='reports'?renderReportsPage():btn.dataset.page==='monitor'?renderRealtimeMonitorPage():btn.dataset.page==='system'?renderSystemPage():btn.dataset.page==='settings'?renderSecurityPage():renderPlaceholder(btn.dataset.page,label);close();}));
+  document.querySelectorAll('.nav-item[data-page]').forEach(btn=>btn.addEventListener('click',()=>{stopRealtimeMonitorAutoRefresh();document.querySelectorAll('.nav-item[data-page]').forEach(x=>x.classList.remove('active'));btn.classList.add('active');const label=btn.textContent.trim();document.getElementById('pageTitle').textContent=label;btn.dataset.page==='dashboard'?renderStageTwoDashboard():btn.dataset.page==='orders'?renderOrdersPage():btn.dataset.page==='stores'?renderStoresPage():btn.dataset.page==='zones'?renderZoneBoundaryEditor():btn.dataset.page==='drivers'?renderDriversPage():btn.dataset.page==='users'?renderUsersPage():btn.dataset.page==='reports'?renderReportsPage():btn.dataset.page==='monitor'?renderRealtimeMonitorPage():btn.dataset.page==='system'?renderSystemPage():btn.dataset.page==='settings'?renderSecurityPage():renderPlaceholder(btn.dataset.page,label);close();}));
   document.getElementById('logoutBtn').addEventListener('click',async()=>{
     try{ await deactivateCurrentPushDevice(); }catch(_){}
     await supabase.auth.signOut();
@@ -3468,3 +3497,100 @@ if(window.visualViewport){
   window.visualViewport.addEventListener('resize',stage31FinalResponsiveRefresh,{passive:true});
 }
 stage31FinalResponsiveRefresh();
+
+
+// Zone boundary editor (Stage 8). Save only through the admin-checked RPC.
+let zoneEditorMap=null,zoneEditorLayer=null,zoneEditorMarkers=[];
+function zoneEditorGeometry(raw){
+  if(typeof raw==='string'){try{raw=JSON.parse(raw)}catch{return null}}
+  if(raw?.type==='Feature')raw=raw.geometry;
+  if(raw?.type==='Polygon' && Array.isArray(raw.coordinates?.[0]))return raw;
+  return null;
+}
+function zoneEditorCoords(){return zoneEditorMarkers.map(m=>[m.getLatLng().lng,m.getLatLng().lat]);}
+function zoneEditorDraw(){
+  if(!zoneEditorMap)return;
+  if(zoneEditorLayer)zoneEditorMap.removeLayer(zoneEditorLayer);
+  const pts=zoneEditorMarkers.map(m=>m.getLatLng());
+  zoneEditorLayer=L.polygon(pts,{color:'#f97316',weight:3,fillOpacity:.12}).addTo(zoneEditorMap);
+}
+function zoneEditorClear(){zoneEditorMarkers.forEach(m=>m.remove());zoneEditorMarkers=[];zoneEditorDraw();}
+function zoneEditorAdd(latlng){
+  const marker=L.marker(latlng,{draggable:true}).addTo(zoneEditorMap);
+  marker.on('drag',zoneEditorDraw);
+  marker.on('click',()=>{if(!document.getElementById('zoneRemovePoint')?.checked)return;marker.remove();zoneEditorMarkers=zoneEditorMarkers.filter(m=>m!==marker);zoneEditorDraw();});
+  zoneEditorMarkers.push(marker);zoneEditorDraw();
+}
+async function zoneEditorLoadLeaflet(){
+  if(window.L)return;
+  if(!document.getElementById('zoneLeafletCss')){
+    const link=document.createElement('link');link.id='zoneLeafletCss';link.rel='stylesheet';link.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';document.head.append(link);
+  }
+  await new Promise((resolve,reject)=>{const el=document.createElement('script');el.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';el.onload=resolve;el.onerror=()=>reject(new Error('تعذر تحميل مكتبة الخريطة'));document.head.append(el);});
+}
+async function renderZoneBoundaryEditor(){
+  const root=document.getElementById('content');
+  if(zoneEditorMap){zoneEditorMap.remove();zoneEditorMap=null;zoneEditorMarkers=[];zoneEditorLayer=null;}
+  root.innerHTML=`<section class="panel" style="padding:18px"><h2>🗺️ رسم حدود مناطق التوصيل</h2><p>اختَر المنطقة، اضغط على الخريطة لإضافة نقاط، واسحب النقاط لتعديل الحدود. احفظ فقط بعد التأكد من الرسم.</p><label>المنطقة <select id="zoneBoundaryArea"></select></label><div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0"><label><input type="checkbox" id="zoneRemovePoint"> حذف نقطة عند الضغط عليها</label><button type="button" id="zoneUndoPoint">تراجع عن آخر نقطة</button><button type="button" id="zoneReloadBoundary">استعادة الرسم المحفوظ</button><button type="button" class="primary-btn compact" id="zoneSaveBoundary">حفظ الحدود</button></div><div id="zoneBoundaryMap" style="height:440px;max-height:65vh;border:1px solid #ddd;border-radius:12px;direction:ltr"></div><p id="zoneBoundaryStatus" role="status" style="margin-top:12px"></p><p class="panel-note">يتم منع الرسومات غير الصالحة والتداخلات غير المقصودة من قاعدة البيانات. تغيير الحدود يؤثر على تحديد منطقة العملاء؛ راجعها قبل الحفظ.</p></section>`;
+  // Stage 10: Zone/area management, independent of the map editor.
+  const manage=document.createElement('section');
+  manage.className='panel';manage.style.padding='18px';manage.style.marginBottom='16px';
+  root.prepend(manage);
+  const drawManage=async()=>{
+    const {data,error}=await supabase.rpc('hala_admin_list_zone_management_v1');
+    if(error){manage.textContent='إدارة المناطق تحتاج SQL المرحلة العاشرة: '+error.message;return;}
+    const zones=data?.zones||[], managedAreas=data?.areas||[];
+    manage.innerHTML=`<h3>إدارة الزونات والمناطق</h3><p class="panel-note">المنطقة الجديدة تبدأ متوقفة لحين رسم حدودها وتفعيلها. إيقاف منطقة قد يمنع طلبات جديدة منها.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end"><label>زون جديد <input id="newZoneName" maxlength="80" placeholder="مثلاً بعشيقة"></label><button type="button" id="createZoneBtn">إضافة زون</button>
+      <label>الزون <select id="newAreaZone">${zones.map(z=>`<option value="${escapeHtml(z.id)}">${escapeHtml(z.name)}</option>`).join('')}</select></label>
+      <label>منطقة جديدة <input id="newAreaName" maxlength="80" placeholder="اسم المنطقة"></label><button type="button" id="createAreaBtn">إضافة منطقة</button></div>
+      <div style="margin-top:12px">${zones.map(z=>`<div style="padding:8px;border-bottom:1px solid #ddd"><strong>${escapeHtml(z.name)}</strong> — ${z.is_active?'مفعّل':'متوقف'} <button type="button" data-zone-toggle="${escapeHtml(z.id)}" data-active="${z.is_active?'false':'true'}">${z.is_active?'إيقاف الزون':'تفعيل الزون'}</button>
+      ${managedAreas.filter(a=>a.zone_id===z.id).map(a=>`<div style="padding:6px 18px">${escapeHtml(a.name)} — ${a.is_active?'مفعّلة':'متوقفة'} ${a.has_boundary?'✓ حدود مرسومة':'⚠ بدون حدود'} <button type="button" data-area-toggle="${escapeHtml(a.id)}" data-active="${a.is_active?'false':'true'}">${a.is_active?'إيقاف':'تفعيل'}</button></div>`).join('')}</div>`).join('')}</div><p id="zoneManageMessage" role="status"></p>`;
+    const feedback=msg=>{const e=manage.querySelector('#zoneManageMessage');if(e)e.textContent=msg;};
+    const call=async(fn,args,warning)=>{if(warning&&!confirm(warning))return;const {error}=await supabase.rpc(fn,args);if(error){feedback('تعذر الحفظ: '+error.message);return;}await drawManage();};
+    manage.querySelector('#createZoneBtn').onclick=()=>{const name=manage.querySelector('#newZoneName').value.trim();if(name.length<2)return feedback('اكتب اسم الزون');call('hala_admin_create_zone_v1',{p_name:name});};
+    manage.querySelector('#createAreaBtn').onclick=()=>{const name=manage.querySelector('#newAreaName').value.trim(),zone=manage.querySelector('#newAreaZone').value;if(name.length<2)return feedback('اكتب اسم المنطقة');call('hala_admin_create_area_v1',{p_zone_id:zone,p_name:name}).then(()=>renderZoneBoundaryEditor());};
+    manage.querySelectorAll('[data-zone-toggle]').forEach(b=>b.onclick=()=>call('hala_admin_set_zone_active_v1',{p_zone_id:b.dataset.zoneToggle,p_active:b.dataset.active==='true'},'تغيير حالة الزون يؤثر على ظهور المتاجر وتحديد المناطق. متابعة؟'));
+    manage.querySelectorAll('[data-area-toggle]').forEach(b=>b.onclick=()=>call('hala_admin_set_area_active_v1',{p_area_id:b.dataset.areaToggle,p_active:b.dataset.active==='true'},'تغيير حالة المنطقة يؤثر على توفر الخدمة للزبائن. متابعة؟'));
+  };
+  await drawManage();
+  const status=document.getElementById('zoneBoundaryStatus');
+  const setStatus=(msg)=>{if(status)status.textContent=msg};
+  const {data, error}=await supabase.rpc('hala_admin_list_delivery_areas_v1');
+  if(error){setStatus('تعذر تحميل المناطق: '+error.message+' — نفّذ SQL المرحلة الثامنة بعد المراجعة.');return;}
+  const areas=data||[];
+  if(!areas.length){setStatus('لا توجد مناطق توصيل.');return;}
+  const select=document.getElementById('zoneBoundaryArea');
+  select.innerHTML=areas.map(a=>`<option value="${escapeHtml(a.area_id)}">${escapeHtml(a.zone_name)} — ${escapeHtml(a.area_name)}</option>`).join('');
+  try{await zoneEditorLoadLeaflet()}catch(e){setStatus(e.message);return;}
+  if(!document.getElementById('zoneBoundaryMap'))return;
+  zoneEditorMap=L.map('zoneBoundaryMap').setView([36.27,43.37],11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(zoneEditorMap);
+  const loadArea=()=>{
+    zoneEditorClear();
+    const area=areas.find(a=>String(a.area_id)===select.value);
+    const geometry=zoneEditorGeometry(area?.boundary);
+    const ring=geometry?.coordinates?.[0]||[];
+    const points=ring.length>1&&JSON.stringify(ring[0])===JSON.stringify(ring[ring.length-1])?ring.slice(0,-1):ring;
+    points.forEach(pt=>{if(Array.isArray(pt)&&Number.isFinite(Number(pt[0]))&&Number.isFinite(Number(pt[1])))zoneEditorAdd([Number(pt[1]),Number(pt[0])]);});
+    if(zoneEditorMarkers.length>=3)zoneEditorMap.fitBounds(zoneEditorLayer.getBounds().pad(.2));
+    setStatus(`المنطقة: ${area?.area_name||''} — ${zoneEditorMarkers.length} نقاط`);
+  };
+  zoneEditorMap.on('click',e=>{if(!document.getElementById('zoneRemovePoint')?.checked)zoneEditorAdd(e.latlng);});
+  select.addEventListener('change',loadArea);
+  document.getElementById('zoneReloadBoundary').addEventListener('click',loadArea);
+  document.getElementById('zoneUndoPoint').addEventListener('click',()=>{const m=zoneEditorMarkers.pop();if(m)m.remove();zoneEditorDraw();});
+  document.getElementById('zoneSaveBoundary').addEventListener('click',async()=>{
+    const coords=zoneEditorCoords();
+    if(coords.length<3){setStatus('يجب رسم ثلاث نقاط على الأقل.');return;}
+    if(!confirm('هل تريد حفظ الحدود الجديدة؟ سيؤثر التغيير على تحديد منطقة العملاء.'))return;
+    const button=document.getElementById('zoneSaveBoundary');button.disabled=true;
+    const geometry={type:'Polygon',coordinates:[[...coords,coords[0]]]};
+    const {error:saveError}=await supabase.rpc('hala_admin_update_area_boundary_v1',{p_area_id:select.value,p_boundary:geometry});
+    button.disabled=false;
+    if(saveError){setStatus('لم يتم الحفظ: '+saveError.message);return;}
+    areas.find(a=>String(a.area_id)===select.value).boundary=geometry;
+    setStatus('تم حفظ حدود المنطقة بنجاح.');
+  });
+  loadArea();setTimeout(()=>zoneEditorMap?.invalidateSize(),100);
+}
