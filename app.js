@@ -2112,11 +2112,29 @@ async function systemFirstRows(list) {
   }
   return { ok:false, rows:[], table:null };
 }
+// Read all phone verification requests in deterministic, newest-first pages.
+// A single un-ordered .limit(5000) is capped by Supabase and hides new requests.
+async function loadCustomerPhoneVerificationRows(){
+  const table='customer_phone_verification_requests';
+  const size=500;
+  const all=[];
+  for(let offset=0;offset<100000;offset+=size){
+    const {data,error}=await supabase.from(table).select('*')
+      .order('requested_at',{ascending:false})
+      .range(offset,offset+size-1);
+    if(error) return {ok:false,rows:all,table,error:error.message};
+    const rows=data||[];
+    all.push(...rows);
+    if(rows.length<size) return {ok:true,rows:all,table};
+  }
+  return {ok:false,rows:all,table,error:'تجاوز عدد الطلبات الحد المسموح للتحميل'};
+}
 async function loadSystemSecurityRequests(tab){
   if(tab==='phone-verification'){
-    const r=await systemFirstRows(['customer_phone_verification_requests']);
+    const r=await loadCustomerPhoneVerificationRows();
     systemPageState.phoneVerifications=r.rows;
     systemPageState.phoneVerificationTable=r.table;
+    systemPageState.phoneVerificationLoadError=r.ok?'':r.error;
   } else if(tab==='pin-customers' || tab==='pin-partners'){
     const r=await systemFirstRows(['phone_pin_reset_requests']);
     systemPageState.pinResets=r.rows;
@@ -2134,7 +2152,7 @@ async function loadSystemData() {
     systemFirstRows(['customer_support_conversations','support_tickets']),
     systemFirstRows(['partner_support_tickets']),
     systemFirstRows(['phone_pin_reset_requests']),
-    systemFirstRows(['customer_phone_verification_requests']),
+    loadCustomerPhoneVerificationRows(),
     systemSafeRows('admin_commission_rules'),
     systemSafeRows('admin_subscriptions'),
     systemSafeRows('admin_system_settings'),
@@ -3118,9 +3136,9 @@ function renderSystemAudit() {
 
 // Phone verification is separate from PIN recovery: distinct requests, codes and RPCs.
 function renderCustomerPhoneVerifications(){
-  if(!systemPageState.phoneVerificationTable) return '<div class="inline-alert warning">جدول تأكيد الأرقام غير متاح. SQL التحديث لم ينفذ بعد.</div>';
+  if(!systemPageState.phoneVerificationTable) return '<div class="inline-alert warning">تعذر قراءة جدول تأكيد الأرقام.</div>';
   const rows=[...systemPageState.phoneVerifications].sort((a,b)=>((a.status==='pending'?0:a.status==='issued'?1:2)-(b.status==='pending'?0:b.status==='issued'?1:2)) || (new Date(b.requested_at||0)-new Date(a.requested_at||0)));
-  return `<section class="pin-recovery-hero"><div><span class="pill">حماية الحسابات</span><h3>تأكيد أرقام العملاء</h3><p>الرمز خاص بتأكيد الهاتف ولا يصلح لاسترجاع PIN. تأكد من صاحب الرقم قبل الإرسال.</p></div><span class="tag">${rows.filter(r=>['pending','issued'].includes(r.status)).length} طلب مفتوح</span></section><div class="table-wrap"><table class="data-table"><thead><tr><th>الهاتف</th><th>الحالة</th><th>الطلب</th><th>الإجراء</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-phone-verify-row="${escapeHtml(String(r.id))}"><td dir="ltr">${escapeHtml(r.phone_e164||'—')}</td><td>${escapeHtml(pinResetStatusLabel(r.status))}</td><td>${fmtDate(r.requested_at)}</td><td>${['pending','issued'].includes(r.status)?`<button class="primary-btn tiny" data-phone-verify-issue="${escapeHtml(String(r.id))}">عرض / إرسال رمز واتساب</button>`:'—'}</td></tr>`).join(''):'<tr><td colspan="4">لا توجد طلبات حالياً.</td></tr>'}</tbody></table></div>`;
+  return `${systemPageState.phoneVerificationLoadError?`<div class="inline-alert warning">تعذر تحميل بعض طلبات التأكيد: ${escapeHtml(systemPageState.phoneVerificationLoadError)}</div>`:''}<section class="pin-recovery-hero"><div><span class="pill">حماية الحسابات</span><h3>تأكيد أرقام العملاء</h3><p>الرمز خاص بتأكيد الهاتف ولا يصلح لاسترجاع PIN. تأكد من صاحب الرقم قبل الإرسال.</p></div><span class="tag">${rows.filter(r=>['pending','issued'].includes(r.status)).length} طلب مفتوح</span></section><div class="table-wrap"><table class="data-table"><thead><tr><th>الهاتف</th><th>الحالة</th><th>الطلب</th><th>الإجراء</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-phone-verify-row="${escapeHtml(String(r.id))}"><td dir="ltr">${escapeHtml(r.phone_e164||'—')}</td><td>${escapeHtml(pinResetStatusLabel(r.status))}</td><td>${fmtDate(r.requested_at)}</td><td>${['pending','issued'].includes(r.status)?`<button class="primary-btn tiny" data-phone-verify-issue="${escapeHtml(String(r.id))}">عرض / إرسال رمز واتساب</button>`:'—'}</td></tr>`).join(''):'<tr><td colspan="4">لا توجد طلبات حالياً.</td></tr>'}</tbody></table></div>`;
 }
 async function issueCustomerPhoneVerification(requestId){
   const request=systemPageState.phoneVerifications.find(r=>String(r.id)===String(requestId));
