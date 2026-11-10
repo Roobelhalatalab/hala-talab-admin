@@ -424,25 +424,32 @@ async function loadDashboardData() {
   let dateField = null;
 
   if (ordersAll.ok) {
-    const all = await loadAllRows(ordersAll.table, 5000);
-    if (all.ok) {
-      orderRows = all.rows;
-      dateField = detectDateField(orderRows);
-      if (dateField) {
-        const todayRows = orderRows.filter(r => isTodayLocal(r[dateField]));
-        todayOrders = { ok:true, count:todayRows.length, table:ordersAll.table, source:dateField };
-        revenue = todayRows.reduce((sum,row)=>sum + numericPick(row,['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
-        recent = {
-          ok:true,
-          table:ordersAll.table,
-          rows:[...orderRows].sort((a,b)=>new Date(b?.[dateField]||0)-new Date(a?.[dateField]||0)).slice(0,8)
-        };
-      } else {
-        // Orders are readable but the current schema has no usable timestamp column.
-        todayOrders = { ok:false, count:null, table:ordersAll.table, source:null, error:'no_date_field' };
-        recent = { ok:true, table:ordersAll.table, rows:orderRows.slice(-8).reverse() };
+    // Query today's records at source, not an arbitrary capped historical page.
+    const startDate = new Date(); startDate.setHours(0,0,0,0);
+    const endDate = new Date(startDate); endDate.setDate(endDate.getDate()+1);
+    const startIso=startDate.toISOString(), endIso=endDate.toISOString();
+    dateField='created_at';
+    try {
+      const {count,error:countError}=await supabase.from(ordersAll.table)
+        .select('id',{count:'exact',head:true}).gte('created_at',startIso).lt('created_at',endIso);
+      todayOrders=countError
+        ? {ok:false,count:null,table:ordersAll.table,source:'created_at',error:countError.message}
+        : {ok:true,count:count||0,table:ordersAll.table,source:'created_at'};
+      let sum=0, revenueOk=true;
+      for(let offset=0;offset<100000;offset+=500){
+        const {data,error}=await supabase.from(ordersAll.table).select('*')
+          .gte('created_at',startIso).lt('created_at',endIso)
+          .order('created_at',{ascending:false}).range(offset,offset+499);
+        if(error){revenueOk=false;break;}
+        const batch=data||[];
+        sum+=batch.reduce((acc,row)=>acc+numericPick(row,['total_amount','grand_total','total','amount','final_total','order_total','total_price']),0);
+        if(batch.length<500)break;
       }
-    }
+      revenue=revenueOk?sum:null;
+      const {data:newest,error:recentError}=await supabase.from(ordersAll.table).select('*')
+        .order('created_at',{ascending:false}).limit(8);
+      if(!recentError)recent={ok:true,table:ordersAll.table,rows:newest||[]};
+    }catch(e){todayOrders={ok:false,count:null,table:ordersAll.table,source:'created_at',error:String(e)};revenue=null;}
   }
 
   const drivers = ordersAll.ok
@@ -769,7 +776,7 @@ async function renderStageTwoDashboard() {
     <section class="metrics-grid polish-metrics">
       ${metricCard('طلبات اليوم',d.todayOrders.ok?fmtNumber(d.todayOrders.count):'—','طلبات مسجلة اليوم','🧾')}
       ${metricCard('طلبات نشطة',fmtNumber(d.activeOrders),'لم تُسلّم أو تُلغَ بعد','📦')}
-      ${metricCard('مبيعات اليوم',fmtMoney(d.revenue),'إجمالي قيمة طلبات اليوم','💰')}
+      ${metricCard('مبيعات اليوم',d.revenue===null?'—':fmtMoney(d.revenue),'إجمالي قيمة طلبات اليوم','💰')}
       ${metricCard('المتاجر',d.stores.ok?fmtNumber(d.stores.count):'—','المتاجر المسجلة','🏪')}
       ${metricCard('السائقون',d.drivers.ok?fmtNumber(d.drivers.count):'—','سائقون ظهروا في الطلبات','🚚')}
     </section>
@@ -1002,6 +1009,17 @@ async function renderOrdersPage() {
   content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل الطلبات...</h2><p>يتم تجهيز آخر بيانات الطلبات.</p></section>`;
   const r=await fetchOrdersForAdmin();
   if(!r.ok){ content.innerHTML=`<section class="empty-state"><div class="empty-icon">🧾</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة الطلبات</h2><p>${escapeHtml(r.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage3_rls.sql</b> في Supabase ثم أعد المحاولة.</p></section>`; return; }
+  // Read-only diagnostic: compare the newest row and count visible to this admin session.
+  let diagnostic = '';
+  try {
+    const [latest, total] = await Promise.all([
+      supabase.from('orders').select('id,order_number,created_at,status').order('created_at', { ascending:false }).limit(1),
+      supabase.from('orders').select('id', { count:'exact', head:true })
+    ]);
+    const newest = latest.data?.[0];
+    const newestText = newest ? `${newest.order_number ?? newest.id} — ${newest.created_at}` : 'لا توجد سجلات مرئية';
+    diagnostic = `<section class="panel" style="padding:12px;margin:12px 0;border:1px solid #f59e0b"><b>تشخيص قراءة الطلبات (للمسؤول فقط)</b><br>عدد الطلبات المرئية لجلسة الإدارة: ${total.error ? escapeHtml(total.error.message) : escapeHtml(String(total.count ?? 'غير معروف'))}<br>أحدث طلب مرئي من Supabase: ${latest.error ? escapeHtml(latest.error.message) : escapeHtml(newestText)}<br>الطلبات المحمّلة بالقائمة: ${r.rows.length}<br><small>قراءة فقط — لا يغيّر الطلبات أو الصلاحيات.</small></section>`;
+  } catch(e) { diagnostic = `<section class="panel" style="padding:12px">خطأ التشخيص: ${escapeHtml(String(e))}</section>`; }
   const lookups = await loadOrderLookups();
   ordersPageState={rows:r.rows,filtered:r.rows,selected:null,dateField:r.dateField,statusField:r.statusField,lookups};
   const statuses=[...new Set(r.rows.map(orderStatusKey).filter(Boolean))];
@@ -1015,6 +1033,7 @@ async function renderOrdersPage() {
       <label class="compact-filter"><span>الفترة</span><select id="ordersDateFilter"><option value="all">كل التواريخ</option><option value="today">اليوم</option><option value="7d">آخر 7 أيام</option><option value="30d">آخر 30 يومًا</option></select></label>
       <span id="ordersResultCount" class="tag">${fmtNumber(r.rows.length)} طلب</span>
     </section>
+    ${diagnostic}
     ${r.warning ? `<div role="alert" class="panel" style="padding:12px;color:#9a5100">${escapeHtml(r.warning)}</div>` : ''}
     <article class="panel orders-panel"><div class="table-wrap"><table class="data-table orders-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المتجر</th><th>السائق</th><th>الحالة</th><th>الإجمالي</th><th>الوقت</th><th></th></tr></thead><tbody id="ordersTableBody">${renderOrdersRows(r.rows)}</tbody></table></div></article>`;
   ['ordersSearch','ordersStoreFilter','ordersStatusFilter','ordersDateFilter'].forEach(id=>document.getElementById(id)?.addEventListener(id==='ordersSearch'?'input':'change',applyOrdersFilters));
