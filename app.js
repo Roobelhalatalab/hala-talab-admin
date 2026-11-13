@@ -1843,7 +1843,7 @@ async function renderUsersPage() {
 
 
 // إدارة هلا طلب — Reports & analytics
-let reportsPageState = { orders:[], stores:new Map(), profiles:new Map(), dateField:null, filtered:[] };
+let reportsPageState = { orders:[], stores:new Map(), profiles:new Map(), zones:new Map(), areas:new Map(), dateField:null, filtered:[], zoneFilter:'all' };
 
 function reportOrderDate(row) {
   const key = reportsPageState.dateField || detectDateField([row]);
@@ -1855,14 +1855,46 @@ function reportOrderAmount(row) { return numericPick(row,['total','total_amount'
 function reportPayment(row) { return String(pick(row,['payment_method'],'غير محدد')||'غير محدد').toLowerCase(); }
 function reportStoreName(row) { const s=reportsPageState.stores.get(String(row.store_id||'')); return pick(row,['store_name','restaurant_name'],pick(s,['name'],'غير معروف')); }
 function reportDriverName(row) { if(!row.driver_id) return 'غير مسند'; const p=reportsPageState.profiles.get(String(row.driver_id)); return pick(p,['full_name','email'],shortId(row.driver_id)); }
-function reportArea(row) {
-  const raw=String(pick(row,['delivery_area','area','district','city','delivery_address'],'غير محدد')||'غير محدد').trim();
-  if (!raw || raw==='—') return 'غير محدد';
-  // Keep a useful compact grouping for free-text addresses.
-  const normalized=raw.replace(/\s+/g,' ').trim();
-  const separators=['،',',','-','–','|'];
-  for (const sep of separators) if (normalized.includes(sep)) return normalized.split(sep)[0].trim().slice(0,40)||'غير محدد';
-  return normalized.slice(0,40);
+function reportSavedDeliveryAreaName(row) {
+  const snap=String(row?.delivery_area_name||'').trim();
+  if (snap && snap!=='null') return snap;
+  const area=reportsPageState.areas?.get(String(row?.delivery_area_id||''));
+  const name=String(area?.name||'').trim();
+  return name || 'غير محددة';
+}
+function reportStoreOriginZoneName(storeId) {
+  const store=reportsPageState.stores.get(String(storeId||''));
+  const zone=reportsPageState.zones?.get(String(store?.zone_id||''));
+  const name=String(zone?.name||'').trim();
+  return name || 'منطقة المتجر غير محددة';
+}
+function reportArea(row) { return reportSavedDeliveryAreaName(row); }
+function zoneReportOrders(year) {
+  return reportsPageState.orders.filter(row=>{
+    const d=reportOrderDate(row);
+    return d && d.getFullYear()===Number(year);
+  });
+}
+function zoneReportBuckets(year) {
+  const rows=zoneReportOrders(year);
+  const buckets={bakhdida:[], bartella:[], unknown:[]};
+  for (const row of rows) {
+    const name=reportStoreOriginZoneName(row.store_id);
+    const key=name==='بخديدا'?'bakhdida':name==='برطلة'?'bartella':'unknown';
+    buckets[key].push(row);
+  }
+  return {
+    rows,
+    buckets,
+    karamlesh: rows.filter(row=>reportSavedDeliveryAreaName(row)==='كارملش')
+  };
+}
+function zoneMoney(rows) {
+  return {
+    count: rows.length,
+    amount: rows.reduce((sum,row)=>sum+reportOrderAmount(row),0),
+    fee: rows.reduce((sum,row)=>sum+Number(row.delivery_fee||0),0)
+  };
 }
 function reportDateKey(d) { return d ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` : ''; }
 function dateInputValue(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -1925,12 +1957,14 @@ function performanceMetrics(rows){
   };
 }
 async function loadReportsData(){
-  const [ordersR,storesR,profilesR]=await Promise.all([fetchAdminRows('orders'),fetchAdminRows('stores'),fetchAdminRows('partner_profiles')]);
+  const [ordersR,storesR,profilesR,zonesR,areasR]=await Promise.all([fetchAdminRows('orders'),fetchAdminRows('stores'),fetchAdminRows('partner_profiles'),fetchAdminRows('hala_zones'),fetchAdminRows('hala_zone_areas')]);
   if(!ordersR.ok)return {ok:false,error:ordersR.error};
   const stores=new Map((storesR.ok?storesR.rows:[]).map(r=>[String(r.id),r]));
   const profiles=new Map((profilesR.ok?profilesR.rows:[]).map(r=>[String(r.id),r]));
+  const zones=new Map((zonesR.ok?zonesR.rows:[]).map(r=>[String(r.id),r]));
+  const areas=new Map((areasR.ok?areasR.rows:[]).map(r=>[String(r.id),r]));
   const dateField=detectDateField(ordersR.rows);
-  return {ok:true,orders:ordersR.rows,stores,profiles,dateField};
+  return {ok:true,orders:ordersR.rows,stores,profiles,zones,areas,dateField};
 }
 function reportsFilters(){return {
   from:document.getElementById('reportFrom')?.value||'',to:document.getElementById('reportTo')?.value||'',
@@ -1968,7 +2002,7 @@ function renderReportsAnalytics(){
       </div></article>
       <article class="panel report-panel"><div class="panel-head"><div><span>الأفضل</span><h3>أفضل المتاجر بالقيمة</h3></div></div><div class="rank-list">${stores.slice(0,8).map(([n,v],i)=>`<div><span><b>${i+1}</b>${escapeHtml(n)}</span><strong>${fmtMoney(v.amount)} <small>(${fmtNumber(v.count)} طلب)</small></strong></div>`).join('')||'<div class="report-empty">لا توجد بيانات.</div>'}</div></article>
       <article class="panel report-panel"><div class="panel-head"><div><span>السائقون</span><h3>الأكثر ظهورًا في الطلبات</h3></div></div><div class="rank-list">${drivers.slice(0,8).map(([n,v],i)=>`<div><span><b>${i+1}</b>${escapeHtml(n)}</span><strong>${fmtNumber(v)} طلب</strong></div>`).join('')||'<div class="report-empty">لا توجد بيانات.</div>'}</div></article>
-      <article class="panel report-panel"><div class="panel-head"><div><span>المناطق</span><h3>الطلبات حسب عنوان التوصيل</h3></div></div><div class="report-bars">${reportBarRows(areas,{maxItems:8})}</div></article>
+      <article class="panel report-panel"><div class="panel-head"><div><span>المناطق</span><h3>الطلبات حسب منطقة التوصيل المحفوظة</h3></div></div><div class="report-bars">${reportBarRows(areas,{maxItems:8})}</div></article>
     </section><section id="reportMetricDetail" class="panel report-metric-detail" hidden></section>`;
   const count=document.getElementById('reportFilteredCount');if(count)count.textContent=`${fmtNumber(rows.length)} طلب`;
   renderMonthlyStoreReports();
@@ -1991,9 +2025,9 @@ function reportRangeLabel(){
   return `${f.from||'—'} إلى ${f.to||'—'} • ${store} • ${status} • ${payment} • ${area}`;
 }
 function exportReportsCsv(){
-  const rows=reportsPageState.filtered||[];const headers=['رقم الطلب','التاريخ','المتجر','السائق','الحالة','طريقة الدفع','المنطقة / العنوان','الإجمالي'];
+  const rows=reportsPageState.filtered||[];const headers=['رقم الطلب','التاريخ','المتجر','السائق','الحالة','طريقة الدفع','منطقة التوصيل','الإجمالي'];
   const q=v=>`"${String(v??'').replace(/"/g,'""')}"`;
-  const lines=[headers.map(q).join(',')];for(const r of rows){lines.push([pick(r,['order_number','id'],''),reportOrderDate(r)?.toLocaleString('ar-IQ')||'',reportStoreName(r),reportDriverName(r),reportStatusLabel(pick(r,['status','order_status'],'')),reportPaymentLabel(reportPayment(r)),reportArea(r),reportOrderAmount(r)].map(q).join(','));}
+  const lines=[headers.map(q).join(',')];for(const r of rows){lines.push([pick(r,['order_number','id'],''),reportOrderDate(r)?.toLocaleString('ar-IQ')||'',reportStoreName(r),reportDriverName(r),reportStatusLabel(pick(r,['status','order_status'],'')),reportPaymentLabel(reportPayment(r)),reportSavedDeliveryAreaName(r),reportOrderAmount(r)].map(q).join(','));}
   const blob=new Blob(['\ufeff'+lines.join('\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`hala-talab-report-${dateInputValue(new Date())}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
 }
 function exportReportsPdf(){
@@ -2031,29 +2065,45 @@ function simpleReportStats(rows){
 }
 function simpleReportStores(year){
   const map=new Map();
-  for(const [id,store] of reportsPageState.stores.entries())map.set(String(id),{id:String(id),name:pick(store,['name'],'متجر')});
+  for(const [id,store] of reportsPageState.stores.entries())map.set(String(id),{id:String(id),name:pick(store,['name'],'متجر'),zone:reportStoreOriginZoneName(id)});
   for(const row of reportsPageState.orders){
     const d=reportOrderDate(row);if(!d||d.getFullYear()!==Number(year))continue;
-    const id=monthlyReportStoreId(row);if(!map.has(id))map.set(id,{id,name:reportStoreName(row)});
+    const id=monthlyReportStoreId(row);if(!map.has(id))map.set(id,{id,name:reportStoreName(row),zone:reportStoreOriginZoneName(id)});
   }
-  return [...map.values()].map(store=>{
+  const filter=reportsPageState.zoneFilter||'all';
+  return [...map.values()].filter(store=>{
+    if(filter==='bakhdida')return store.zone==='بخديدا';
+    if(filter==='bartella')return store.zone==='برطلة';
+    if(filter==='unknown')return store.zone==='منطقة المتجر غير محددة';
+    return true;
+  }).map(store=>{
     const rows=simpleReportRowsForStoreYear(store.id,year);return {...store,stats:simpleReportStats(rows)};
   }).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ar'));
+}
+function renderZoneReportSummary(year){
+  const data=zoneReportBuckets(year);
+  const card=(title,note,rows)=> {
+    const money=zoneMoney(rows);
+    return `<article class="panel"><div class="panel-head"><div><span>${escapeHtml(note)}</span><h3>${escapeHtml(title)}</h3></div></div><div class="simple-report-metrics"><div><span>الطلبات</span><b>${fmtNumber(money.count)}</b></div><div><span>القيمة</span><b>${fmtMoney(money.amount)}</b></div><div><span>أجور التوصيل</span><b>${fmtMoney(money.fee)}</b></div></div></article>`;
+  };
+  const filters=[['all','كل المناطق'],['bakhdida','بخديدا'],['bartella','برطلة'],['unknown','منطقة غير محددة']];
+  return `<section class="reports-grid">${card('بخديدا','متاجر منطقة بخديدا',data.buckets.bakhdida)}${card('برطلة','متاجر منطقة برطلة',data.buckets.bartella)}${card('كارملش','توصيل كارملش ضمن الطلب نفسه',data.karamlesh)}${card('غير محددة','طلب بلا منطقة توصيل محفوظة',data.rows.filter(row=>reportSavedDeliveryAreaName(row)==='غير محددة'))}</section><p class="muted-cell">طلب كارملش يُحسب مرة واحدة داخل منطقة متجره الأصلية، وتظهر كارملش هنا كإحصاء توصيل فقط.</p><div class="simple-report-back-row">${filters.map(([id,label])=>`<button type="button" class="${reportsPageState.zoneFilter===id?'primary-btn':'secondary-btn'} compact" data-zone-filter="${id}">${label}</button>`).join('')}</div>`;
 }
 function renderSimpleReportStoreList(year){
   const root=document.getElementById('simpleReportsRoot');if(!root)return;
   const stores=simpleReportStores(year);
-  root.innerHTML=`<section class="simple-report-store-grid">${stores.length?stores.map(store=>`<article class="panel simple-store-report-card"><div class="simple-store-report-main"><div><span class="simple-report-kicker">تقرير متجر</span><h3>${escapeHtml(store.name||'غير معروف')}</h3><p>إجمالي طلبات ${year}</p></div><strong>${fmtNumber(store.stats.total)} <small>طلب</small></strong></div><button type="button" class="primary-btn simple-open-report" data-simple-store="${escapeHtml(store.id)}" data-simple-year="${year}">فتح التقرير</button></article>`).join(''):`<article class="panel report-empty">لا توجد متاجر لعرضها.</article>`}</section>`;
+  root.innerHTML=`${renderZoneReportSummary(year)}<section class="simple-report-store-grid">${stores.length?stores.map(store=>`<article class="panel simple-store-report-card"><div class="simple-store-report-main"><div><span class="simple-report-kicker">${escapeHtml(store.zone)}</span><h3>${escapeHtml(store.name||'غير معروف')}</h3><p>إجمالي طلبات ${year}</p></div><strong>${fmtNumber(store.stats.total)} <small>طلب</small></strong></div><button type="button" class="primary-btn simple-open-report" data-simple-store="${escapeHtml(store.id)}" data-simple-year="${year}">فتح التقرير</button></article>`).join(''):`<article class="panel report-empty">لا توجد متاجر لعرضها.</article>`}</section>`;
+  root.querySelectorAll('[data-zone-filter]').forEach(btn=>btn.addEventListener('click',()=>{reportsPageState.zoneFilter=btn.dataset.zoneFilter;renderSimpleReportStoreList(year);}));
   root.querySelectorAll('[data-simple-store]').forEach(btn=>btn.addEventListener('click',()=>renderSimpleStoreReport(btn.dataset.simpleStore,Number(btn.dataset.simpleYear))));
 }
 function renderSimpleStoreReport(storeId,year){
   const root=document.getElementById('simpleReportsRoot');if(!root)return;
   const store=simpleReportStores(year).find(s=>String(s.id)===String(storeId));if(!store)return;
-  const rows=simpleReportRowsForStoreYear(storeId,year);const annual=simpleReportStats(rows);
+  const rows=simpleReportRowsForStoreYear(storeId,year);const annual=simpleReportStats(rows);const areas=aggregateCount(rows,reportSavedDeliveryAreaName);
   const months=Array.from({length:12},(_,i)=>{
     const monthRows=rows.filter(r=>reportOrderDate(r)?.getMonth()===i);return {index:i,rows:monthRows,stats:simpleReportStats(monthRows)};
   });
-  root.innerHTML=`<section class="simple-report-page"><div class="simple-report-back-row"><button type="button" class="secondary-btn compact" id="backToSimpleStores">← كل المتاجر</button><span class="tag">${year}</span></div><article class="panel simple-store-report-header"><span class="simple-report-kicker">تقرير المتجر</span><h2>${escapeHtml(store.name||'غير معروف')}</h2></article><article class="panel simple-annual-report"><div class="panel-head"><div><span>التقرير السنوي</span><h3>ملخص سنة ${year}</h3></div></div><div class="simple-report-metrics"><div><span>كل الطلبات</span><b>${fmtNumber(annual.total)}</b></div><div><span>المكتملة</span><b>${fmtNumber(annual.delivered)}</b></div><div><span>الملغاة</span><b>${fmtNumber(annual.cancelled)}</b></div><div><span>غير المكتملة</span><b>${fmtNumber(annual.incomplete)}</b></div></div></article><section class="simple-months-section"><div class="simple-section-title"><span>التقارير الشهرية</span><h3>الأشهر 1 إلى 12</h3></div><div class="simple-month-grid">${months.map(m=>`<article class="panel simple-month-card"><div><span>شهر ${m.index+1}</span><strong>${fmtNumber(m.stats.total)} <small>طلب</small></strong></div><button type="button" class="secondary-btn compact" data-simple-month="${m.index}" data-simple-store-month="${escapeHtml(store.id)}" data-simple-month-year="${year}">فتح</button></article>`).join('')}</div></section></section>`;
+  root.innerHTML=`<section class="simple-report-page"><div class="simple-report-back-row"><button type="button" class="secondary-btn compact" id="backToSimpleStores">← كل المتاجر</button><span class="tag">${year}</span></div><article class="panel simple-store-report-header"><span class="simple-report-kicker">${escapeHtml(store.zone||reportStoreOriginZoneName(store.id))}</span><h2>${escapeHtml(store.name||'غير معروف')}</h2></article><article class="panel simple-annual-report"><div class="panel-head"><div><span>التقرير السنوي</span><h3>ملخص سنة ${year}</h3></div></div><div class="simple-report-metrics"><div><span>كل الطلبات</span><b>${fmtNumber(annual.total)}</b></div><div><span>المكتملة</span><b>${fmtNumber(annual.delivered)}</b></div><div><span>الملغاة</span><b>${fmtNumber(annual.cancelled)}</b></div><div><span>غير المكتملة</span><b>${fmtNumber(annual.incomplete)}</b></div></div><div class="report-bars">${reportBarRows(areas,{maxItems:6})}</div></article><section class="simple-months-section"><div class="simple-section-title"><span>التقارير الشهرية</span><h3>الأشهر 1 إلى 12</h3></div><div class="simple-month-grid">${months.map(m=>`<article class="panel simple-month-card"><div><span>شهر ${m.index+1}</span><strong>${fmtNumber(m.stats.total)} <small>طلب</small></strong></div><button type="button" class="secondary-btn compact" data-simple-month="${m.index}" data-simple-store-month="${escapeHtml(store.id)}" data-simple-month-year="${year}">فتح</button></article>`).join('')}</div></section></section>`;
   document.getElementById('backToSimpleStores')?.addEventListener('click',()=>renderSimpleReportStoreList(year));
   root.querySelectorAll('[data-simple-month]').forEach(btn=>btn.addEventListener('click',()=>renderSimpleMonthReport(btn.dataset.simpleStoreMonth,Number(btn.dataset.simpleMonth),Number(btn.dataset.simpleMonthYear))));
   root.scrollIntoView({behavior:'smooth',block:'start'});
@@ -2063,14 +2113,14 @@ function renderSimpleMonthReport(storeId,monthIndex,year){
   const store=simpleReportStores(year).find(s=>String(s.id)===String(storeId));if(!store)return;
   const rows=simpleReportRowsForStoreYear(storeId,year).filter(r=>reportOrderDate(r)?.getMonth()===monthIndex).sort((a,b)=>(reportOrderDate(b)||0)-(reportOrderDate(a)||0));
   const stats=simpleReportStats(rows);const month=monthIndex+1;
-  root.innerHTML=`<section class="simple-report-page"><div class="simple-report-back-row"><button type="button" class="secondary-btn compact" id="backToSimpleStoreReport">← تقرير المتجر</button><span class="tag">${escapeHtml(store.name||'غير معروف')} · ${year}</span></div><article class="panel simple-store-report-header"><span class="simple-report-kicker">التقرير الشهري</span><h2>شهر ${month}</h2><p>${escapeHtml(store.name||'غير معروف')}</p></article><div class="simple-report-metrics month-detail-metrics"><div><span>كل الطلبات</span><b>${fmtNumber(stats.total)}</b></div><div><span>المكتملة</span><b>${fmtNumber(stats.delivered)}</b></div><div><span>الملغاة</span><b>${fmtNumber(stats.cancelled)}</b></div><div><span>غير المكتملة</span><b>${fmtNumber(stats.incomplete)}</b></div></div><article class="panel"><div class="panel-head"><div><span>طلبات الشهر</span><h3>${fmtNumber(rows.length)} طلب</h3></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>الطلب</th><th>الحالة</th><th>القيمة</th><th>التاريخ</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td>${escapeHtml(String(pick(r,['order_number','id'],'—')))}</td><td>${escapeHtml(reportStatusLabel(normalizeStatus(pick(r,['status','order_status'],''))))}</td><td>${fmtMoney(reportOrderAmount(r))}</td><td>${reportOrderDate(r)?fmtDate(reportOrderDate(r)):'—'}</td></tr>`).join(''):'<tr><td colspan="4" class="muted-cell">لا توجد طلبات في هذا الشهر.</td></tr>'}</tbody></table></div></article></section>`;
+  root.innerHTML=`<section class="simple-report-page"><div class="simple-report-back-row"><button type="button" class="secondary-btn compact" id="backToSimpleStoreReport">← تقرير المتجر</button><span class="tag">${escapeHtml(store.name||'غير معروف')} · ${year}</span></div><article class="panel simple-store-report-header"><span class="simple-report-kicker">${escapeHtml(store.zone||reportStoreOriginZoneName(store.id))}</span><h2>شهر ${month}</h2><p>${escapeHtml(store.name||'غير معروف')}</p></article><div class="simple-report-metrics month-detail-metrics"><div><span>كل الطلبات</span><b>${fmtNumber(stats.total)}</b></div><div><span>المكتملة</span><b>${fmtNumber(stats.delivered)}</b></div><div><span>الملغاة</span><b>${fmtNumber(stats.cancelled)}</b></div><div><span>غير المكتملة</span><b>${fmtNumber(stats.incomplete)}</b></div></div><article class="panel"><div class="panel-head"><div><span>طلبات الشهر</span><h3>${fmtNumber(rows.length)} طلب</h3></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>الطلب</th><th>الحالة</th><th>منطقة التوصيل</th><th>أجرة التوصيل</th><th>القيمة</th><th>التاريخ</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td>${escapeHtml(String(pick(r,['order_number','id'],'—')))}</td><td>${escapeHtml(reportStatusLabel(normalizeStatus(pick(r,['status','order_status'],''))))}</td><td>${escapeHtml(reportSavedDeliveryAreaName(r))}</td><td>${fmtMoney(Number(r.delivery_fee||0))}</td><td>${fmtMoney(reportOrderAmount(r))}</td><td>${reportOrderDate(r)?fmtDate(reportOrderDate(r)):'—'}</td></tr>`).join(''):'<tr><td colspan="6" class="muted-cell">لا توجد طلبات في هذا الشهر.</td></tr>'}</tbody></table></div></article></section>`;
   document.getElementById('backToSimpleStoreReport')?.addEventListener('click',()=>renderSimpleStoreReport(storeId,year));
   root.scrollIntoView({behavior:'smooth',block:'start'});
 }
 async function renderReportsPage(){
   const content=document.getElementById('content');content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تجهيز تقارير المتاجر...</h2><p>يتم تحميل الطلبات وحساب التقرير الشهري والسنوي لكل متجر.</p></section>`;
   const r=await loadReportsData();if(!r.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">📊</div><span class="pill">إدارة هلا طلب</span><h2>تعذر تحميل التقارير</h2><p>${escapeHtml(r.error||'خطأ غير معروف')}</p><p>تأكد من صلاحية قراءة orders.</p></section>`;return;}
-  reportsPageState.orders=r.orders;reportsPageState.stores=r.stores;reportsPageState.profiles=r.profiles;reportsPageState.dateField=r.dateField;
+  reportsPageState.orders=r.orders;reportsPageState.stores=r.stores;reportsPageState.profiles=r.profiles;reportsPageState.zones=r.zones;reportsPageState.areas=r.areas;reportsPageState.dateField=r.dateField;
   const years=monthlyReportYears(r.orders);const selected=years[0]||new Date().getFullYear();
   content.innerHTML=`<section class="dashboard-hero simple-reports-hero"><div><span class="pill">إدارة هلا طلب</span><h2>تقارير المتاجر</h2><p>كل متجر له تقرير مستقل. افتح المتجر لمشاهدة التقرير السنوي ثم افتح أي شهر لمشاهدة طلباته.</p></div><label class="simple-report-year">السنة<select id="simpleReportYear">${years.map(y=>`<option value="${y}" ${y===selected?'selected':''}>${y}</option>`).join('')}</select></label></section><div id="simpleReportsRoot"></div>`;
   document.getElementById('simpleReportYear')?.addEventListener('change',e=>renderSimpleReportStoreList(Number(e.target.value)));
@@ -3582,7 +3632,9 @@ function zoneEditorDraw(){
   if(!zoneEditorMap)return;
   if(zoneEditorLayer)zoneEditorMap.removeLayer(zoneEditorLayer);
   const pts=zoneEditorMarkers.map(m=>m.getLatLng());
-  zoneEditorLayer=L.polygon(pts,{color:'#f97316',weight:3,fillOpacity:.12}).addTo(zoneEditorMap);
+  const label=document.getElementById('zoneBoundaryArea')?.selectedOptions?.[0]?.textContent||'';
+  const color=label.includes('كارملش')?'#16a34a':label.includes('برطلة')?'#7c3aed':'#f97316';
+  zoneEditorLayer=L.polygon(pts,{color,weight:3,fillOpacity:.18}).addTo(zoneEditorMap);
 }
 function zoneEditorClear(){zoneEditorMarkers.forEach(m=>m.remove());zoneEditorMarkers=[];zoneEditorDraw();}
 function zoneEditorAdd(latlng){

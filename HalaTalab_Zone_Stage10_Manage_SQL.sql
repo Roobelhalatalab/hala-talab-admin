@@ -19,7 +19,7 @@ BEGIN
  IF auth.uid() IS NULL OR NOT COALESCE(public.hala_is_admin(),false) THEN RAISE EXCEPTION 'Admin permission required' USING ERRCODE='42501'; END IF;
  IF length(btrim(coalesce(p_name,''))) NOT BETWEEN 2 AND 80 THEN RAISE EXCEPTION 'Invalid area name'; END IF;
  IF NOT EXISTS(SELECT 1 FROM public.hala_zones WHERE id=p_zone_id) THEN RAISE EXCEPTION 'Zone not found'; END IF;
- IF EXISTS(SELECT 1 FROM public.hala_zone_areas WHERE zone_id=p_zone_id AND lower(name)=lower(btrim(p_name))) THEN RAISE EXCEPTION 'Area name already exists'; END IF;
+ IF EXISTS(SELECT 1 FROM public.hala_zone_areas WHERE lower(name)=lower(btrim(p_name))) THEN RAISE EXCEPTION 'Area name already exists'; END IF;
  INSERT INTO public.hala_zone_areas(zone_id,name,is_active,boundary) VALUES(p_zone_id,btrim(p_name),false,NULL) RETURNING id INTO v_id;
  RETURN v_id;
 END; $$;
