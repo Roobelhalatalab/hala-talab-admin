@@ -365,7 +365,7 @@ async function firstAvailableRows(candidates, limit=8) {
 function pick(obj, names, fallback='—') { for (const n of names) if (obj?.[n] !== undefined && obj?.[n] !== null && obj?.[n] !== '') return obj[n]; return fallback; }
 function numericPick(obj, names) { const v = pick(obj,names,null); const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function statusLabel(v='') {
-  const s=String(v).toLowerCase(); const map={pending:'جديد',new:'جديد',accepted:'مقبول',assigned:'تم تعيين سائق',preparing:'قيد التحضير',ready:'جاهز للاستلام',picked_up:'تم الاستلام',delivered:'تم التسليم',cancelled:'ملغي',canceled:'ملغي'}; return map[s] || v || '—';
+  const s=String(v).toLowerCase(); const map={pending:'جديد',new:'جديد',accepted:'مقبول',assigned:'تم تعيين سائق',preparing:'قيد التحضير',ready:'جاهز للاستلام',picked_up:'تم الاستلام',delivered:'تم التسليم',cancelled:'ملغي',canceled:'ملغي',rejected:'ملغي'}; return map[s] || v || '—';
 }
 async function loadDistinctDriversFromOrders(orderTable) {
   if (!orderTable) return { ok:false, table:null, count:null, source:'orders.driver_id' };
@@ -582,16 +582,23 @@ async function safeAdminUsers() {
       safeRows('orders')
     ]);
     if(error) return {ok:false,rows:[],error:error.message};
+    if(!identityR.ok) return {ok:false,rows:[],error:'تعذر التحقق من هوية العملاء: '+(identityR.error||'فشل قراءة الدالة')};
     const merged=mergeAdminUserIdentityV57(data||[],identityR.ok?identityR.rows:[]);
-    // Stage 57: صفحة المستخدمين = عملاء تطبيق العميل المسجلون فقط.
-    // لا نظهر جلسات التصفح/الحسابات المجهولة، ولا أصحاب المتاجر، ولا السائقين.
+    // Stage 12: v57 is the admin-authorized source for registered-customer
+    // classification. Do NOT query customer_accounts directly from the browser:
+    // its RLS may correctly deny the request, which previously made the whole
+    // users page appear empty even when admin RPCs returned valid customers.
+    // If v57 is unavailable, preserve the existing v39 compatibility path.
+    const registeredIds=new Set((identityR.v57 ? identityR.rows : [])
+      .filter(r=>r.is_registered_customer===true)
+      .map(r=>String(r.user_id||'')).filter(Boolean));
     const customers=merged.filter(r=>{
       if(r.effective_type!=='customer') return false;
       if(r.is_anonymous===true) return false;
-      return identityR.v57 ? r.is_registered_customer===true : true;
+      return identityR.v57 ? registeredIds.has(String(r.user_id)) : true;
     });
     const fallbackMap=buildCustomerIdentityFallbackFromOrders(ordersR.ok?ordersR.rows:[]);
-    return {ok:true,rows:mergeCustomerIdentityFallback(customers,fallbackMap),identity_v57:identityR.v57===true};
+    return {ok:true,rows:mergeCustomerIdentityFallback(customers,fallbackMap),identity_v57:identityR.v57===true,base_count:(data||[]).length,identity_count:identityR.rows.length,registered_count:registeredIds.size};
   }
   catch(e){ return {ok:false,rows:[],error:String(e)}; }
 }
@@ -832,7 +839,7 @@ function statusOptionsHtml(current='') {
   return extra + ORDER_STATUS_OPTIONS.map(([v,l])=>`<option value="${v}" ${v===key?'selected':''}>${l}</option>`).join('');
 }
 
-let ordersPageState = { rows:[], filtered:[], selected:null, dateField:null, statusField:'status', lookups:{stores:new Map(),profiles:new Map()} };
+let ordersPageState = { rows:[], filtered:[], selected:null, dateField:null, statusField:'status', lookups:{stores:new Map(),profiles:new Map()}, zones:new Map() };
 
 async function fetchLookupTable(table, fields='*') {
   try {
@@ -844,7 +851,7 @@ async function fetchLookupTable(table, fields='*') {
 
 async function loadOrderLookups() {
   const [storesR, profilesR] = await Promise.all([
-    fetchLookupTable('stores', 'id,name,phone'),
+    fetchLookupTable('stores', 'id,name,phone,zone_id'),
     fetchLookupTable('partner_profiles', 'id,full_name,phone,email,partner_type')
   ]);
   const stores = new Map((storesR.rows || []).map(r => [String(r.id), r]));
@@ -929,16 +936,29 @@ function renderOrdersRows(rows) {
   }).join('');
 }
 
+// Display-only zone classification. Prefer order-time snapshots; never use delivery zone
+// as the store's zone. Historical orders without snapshots use the current store zone.
+function orderAdminOriginZone(row) {
+  const savedName=String(row?.store_zone_name ?? row?.origin_zone_name ?? '').trim();
+  if(savedName) return reportCanonicalZoneName(savedName);
+  const savedId=String(row?.store_zone_id ?? row?.origin_zone_id ?? '').trim();
+  const zoneId=savedId || String(ordersPageState.lookups?.stores?.get(String(row?.store_id||''))?.zone_id||'');
+  const name=ordersPageState.zones?.get(zoneId)?.name;
+  const normalized=reportCanonicalZoneName(name||'');
+  return normalized==='بخديدا'||normalized==='برطلة' ? normalized : 'غير محددة';
+}
 function applyOrdersFilters() {
   const q = (document.getElementById('ordersSearch')?.value || '').trim().toLowerCase();
   const status = document.getElementById('ordersStatusFilter')?.value || 'all';
   const storeId = document.getElementById('ordersStoreFilter')?.value || 'all';
   const date = document.getElementById('ordersDateFilter')?.value || 'all';
+  const zoneFilter = document.getElementById('ordersZoneFilter')?.value || 'all';
   const now = new Date();
   let rows = [...ordersPageState.rows];
   if (q) rows = rows.filter(r => orderSearchText(r).includes(q));
   if (status !== 'all') rows = rows.filter(r => orderStatusKey(r) === status);
   if (storeId !== 'all') rows = rows.filter(r => String(r.store_id || '') === String(storeId));
+  if (zoneFilter !== 'all') rows = rows.filter(r => orderAdminOriginZone(r) === zoneFilter);
   if (date !== 'all') rows = rows.filter(r => {
     const d = new Date(orderDateValue(r)); if (Number.isNaN(d.getTime())) return false;
     if (date === 'today') return d.toDateString() === now.toDateString();
@@ -1031,14 +1051,16 @@ async function renderOrdersPage() {
     const newestText = newest ? `${newest.order_number ?? newest.id} — ${newest.created_at}` : 'لا توجد سجلات مرئية';
     diagnostic = `<section class="panel" style="padding:12px;margin:12px 0;border:1px solid #f59e0b"><b>تشخيص قراءة الطلبات (للمسؤول فقط)</b><br>عدد الطلبات المرئية لجلسة الإدارة: ${total.error ? escapeHtml(total.error.message) : escapeHtml(String(total.count ?? 'غير معروف'))}<br>أحدث طلب مرئي من Supabase: ${latest.error ? escapeHtml(latest.error.message) : escapeHtml(newestText)}<br>الطلبات المحمّلة بالقائمة: ${r.rows.length}<br><small>قراءة فقط — لا يغيّر الطلبات أو الصلاحيات.</small></section>`;
   } catch(e) { diagnostic = `<section class="panel" style="padding:12px">خطأ التشخيص: ${escapeHtml(String(e))}</section>`; }
-  const lookups = await loadOrderLookups();
-  ordersPageState={rows:r.rows,filtered:r.rows,selected:null,dateField:r.dateField,statusField:r.statusField,lookups};
+  const [lookups, zonesResult] = await Promise.all([loadOrderLookups(), fetchLookupTable('hala_zones', 'id,name')]);
+  const zones=new Map((zonesResult.ok?zonesResult.rows:[]).map(z=>[String(z.id),z]));
+  ordersPageState={rows:r.rows,filtered:r.rows,selected:null,dateField:r.dateField,statusField:r.statusField,lookups,zones};
   const statuses=[...new Set(r.rows.map(orderStatusKey).filter(Boolean))];
   const storeOptions=[...lookups.stores.values()].sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ar')).map(s=>`<option value="${escapeHtml(String(s.id))}">${escapeHtml(s.name||'متجر')}</option>`).join('');
   content.innerHTML=`
     <section class="dashboard-hero"><div><span class="pill">إدارة يومية</span><h2>الطلبات</h2><p>كل طلبات هلا طلب في مكان واحد. استخدم الفلاتر للوصول بسرعة إلى طلبات متجر أو حالة أو فترة محددة.</p></div><button id="refreshOrders" class="secondary-btn">↻ تحديث الطلبات</button></section>
     <section class="orders-toolbar polish-toolbar">
       <label class="search-box">🔎<input id="ordersSearch" type="search" placeholder="ابحث برقم الطلب، اسم العميل أو السائق..." /></label>
+      <label class="compact-filter"><span>منطقة المتجر</span><select id="ordersZoneFilter"><option value="all">كل المناطق</option><option value="بخديدا">بخديدا</option><option value="برطلة">برطلة</option><option value="غير محددة">غير محددة</option></select></label>
       <label class="compact-filter"><span>المتجر</span><select id="ordersStoreFilter"><option value="all">كل المتاجر</option>${storeOptions}</select></label>
       <label class="compact-filter"><span>الحالة</span><select id="ordersStatusFilter"><option value="all">كل الحالات</option>${ORDER_STATUS_OPTIONS.filter(([v])=>statuses.includes(v)).map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select></label>
       <label class="compact-filter"><span>الفترة</span><select id="ordersDateFilter"><option value="all">كل التواريخ</option><option value="today">اليوم</option><option value="7d">آخر 7 أيام</option><option value="30d">آخر 30 يومًا</option></select></label>
@@ -1047,7 +1069,7 @@ async function renderOrdersPage() {
     ${diagnostic}
     ${r.warning ? `<div role="alert" class="panel" style="padding:12px;color:#9a5100">${escapeHtml(r.warning)}</div>` : ''}
     <article class="panel orders-panel"><div class="table-wrap"><table class="data-table orders-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المتجر</th><th>السائق</th><th>الحالة</th><th>الإجمالي</th><th>الوقت</th><th></th></tr></thead><tbody id="ordersTableBody">${renderOrdersRows(r.rows)}</tbody></table></div></article>`;
-  ['ordersSearch','ordersStoreFilter','ordersStatusFilter','ordersDateFilter'].forEach(id=>document.getElementById(id)?.addEventListener(id==='ordersSearch'?'input':'change',applyOrdersFilters));
+  ['ordersSearch','ordersZoneFilter','ordersStoreFilter','ordersStatusFilter','ordersDateFilter'].forEach(id=>document.getElementById(id)?.addEventListener(id==='ordersSearch'?'input':'change',applyOrdersFilters));
   document.getElementById('refreshOrders')?.addEventListener('click',renderOrdersPage);
   wireOrderRowButtons();
   if(pendingAdminNavigationTarget?.page==='orders' && pendingAdminNavigationTarget.id){
@@ -1550,7 +1572,7 @@ async function renderStoresPage() {
       <button type="button" class="system-tab active" data-store-section="restaurants">🍽️ المطاعم <span>${fmtNumber(restaurantCount)}</span></button>
       <button type="button" class="system-tab" data-store-section="stores">🏪 المتاجر <span>${fmtNumber(storeCount)}</span></button>
     </section>
-    <section class="stores-toolbar" style="margin-bottom:12px"><strong>منطقة المتجر الأصلية</strong><select id="storesZoneFilter"><option value="all">جميع المناطق</option>${adminZoneCatalog.map(z=>`<option value="${escapeHtml(String(z.id))}">متاجر ${escapeHtml(z.name)}</option>`).join('')}</select><span class="tag">المتاجر الخارجية تبقى تابعة لمنطقتها الأصلية</span></section>
+    <section class="stores-toolbar" style="margin-bottom:12px"><strong>منطقة المتجر الأصلية</strong><select id="storesZoneFilter"><option value="all">جميع المناطق</option>${adminZoneCatalog.map(z=>`<option value="${escapeHtml(String(z.id))}">متاجر ${escapeHtml(reportCanonicalZoneName(z.name))}</option>`).join('')}</select><span class="tag">المتاجر الخارجية تبقى تابعة لمنطقتها الأصلية</span></section>
     <section class="store-summary-grid">
       ${actionMetricCard('إجمالي الحسابات',fmtNumber(storesR.rows.length),'مطاعم ومتاجر','🏪','stores','all')}
       ${actionMetricCard('قيد المراجعة',fmtNumber(counts.pending),'لم يُتخذ قرار إداري بعد','🕒','stores','pending')}
@@ -1829,12 +1851,20 @@ async function saveUserPermissions(row) {
 async function renderUsersPage() {
   const content=document.getElementById('content');content.innerHTML=`<section class="loading-panel"><div class="spinner"></div><h2>جارٍ تحميل المستخدمين...</h2><p>يتم تجهيز الحسابات والصلاحيات.</p></section>`;
   const [{data:{user}},r]=await Promise.all([supabase.auth.getUser(),loadUsersAdminData()]);
-  if(!r.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">👥</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة المستخدمين</h2><p>${escapeHtml(r.error||'خطأ غير معروف')}</p><p>شغّل ملف <b>admin_stage6_rls.sql</b> ثم أعد المحاولة.</p></section>`;return;}
+  if(!r.ok){content.innerHTML=`<section class="empty-state"><div class="empty-icon">👥</div><span class="pill">إدارة هلا طلب</span><h2>تعذر قراءة المستخدمين</h2><p>${escapeHtml(r.error||'خطأ غير معروف')}</p><p>تحقق من جلسة الإدارة وصلاحية استدعاء دوال المستخدمين؛ لا تغيّر سياسات RLS قبل معرفة الخطأ.</p></section>`;return;}
+  // Stage 13: never present a partial admin_list_users result as a complete customer count.
+  // Compare only registered v57 customer IDs with IDs returned by admin_list_users.
+  // This is a read-only UI diagnostic; it does not change Auth, RPCs, or notifications.
+  const hasMissingRegisteredCustomers=r.identity_v57===true && r.registered_count>r.rows.length;
+  if(!r.rows.length && (r.registered_count>0 || r.identity_count>0)){
+    content.innerHTML=`<section class="empty-state"><div class="empty-icon">⚠️</div><h2>العملاء موجودون لكن لم يظهروا</h2><p>نتائج دالة المستخدمين: ${fmtNumber(r.base_count)}، الهوية: ${fmtNumber(r.identity_count)}، حسابات العملاء: ${fmtNumber(r.registered_count)}.</p><p>يجب فحص توافق دالة admin_list_users مع حساب الإدارة الحالي. لم تُحذف أي حسابات.</p><button class="secondary-btn" id="retryUsers">↻ إعادة المحاولة</button></section>`;
+    document.getElementById('retryUsers')?.addEventListener('click',renderUsersPage);return;
+  }
   usersPageState.currentUserId=user?.id||null;usersPageState.rows=r.rows;usersPageState.filtered=r.rows;
   const suspendedCount=r.rows.filter(x=>x.access_status==='suspended').length;
   const activeCount=r.rows.length-suspendedCount;
   content.innerHTML=`<section class="dashboard-hero"><div><span class="pill">إدارة يومية</span><h2>المستخدمون / العملاء</h2><p>هذه الصفحة مخصصة للعملاء فقط. المتاجر تظهر في قسم المتاجر والسائقون في قسم السائقين بدون تكرار.</p></div><button id="refreshUsers" class="secondary-btn">↻ تحديث العملاء</button></section>
-    <section class="stores-toolbar" style="margin-bottom:12px"><strong>منطقة المتجر الأصلية</strong><select id="storesZoneFilter"><option value="all">جميع المناطق</option>${adminZoneCatalog.map(z=>`<option value="${escapeHtml(String(z.id))}">متاجر ${escapeHtml(z.name)}</option>`).join('')}</select><span class="tag">المتاجر الخارجية تبقى تابعة لمنطقتها الأصلية</span></section>
+    ${hasMissingRegisteredCustomers?`<section class="alert error" role="alert"><strong>تنبيه: قائمة العملاء غير مكتملة.</strong> دالة هوية العملاء تعرّفت على ${fmtNumber(r.registered_count)} حساب مسجل، لكن القائمة تعرض ${fmtNumber(r.rows.length)} فقط. لا تعتمد العدد الظاهر كإجمالي نهائي. يلزم فحص دالة admin_list_users وصلاحيات جلسة الإدارة. لم يتم تعديل أي حساب.</section>`:''}
     <section class="store-summary-grid">${actionMetricCard('إجمالي العملاء',fmtNumber(r.rows.length),'حسابات العملاء فقط','👥','users','all')}${actionMetricCard('نشطون',fmtNumber(activeCount),'حسابات العملاء المتاحة','✅','users-access','active')}${actionMetricCard('موقوفون',fmtNumber(suspendedCount),'إيقاف إداري مؤقت','⏸️','users-access','suspended')}</section>
     <section class="stores-toolbar"><label class="search-box">🔎<input id="usersSearch" type="search" placeholder="ابحث باسم العميل، البريد، الهاتف..." /></label><select id="usersAccessFilter"><option value="all">كل حالات المتابعة</option>${USER_ACCESS_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select><span id="usersResultCount" class="tag">${fmtNumber(r.rows.length)} عميل</span></section>
     <article class="panel stores-panel"><div class="table-wrap"><table class="data-table users-table"><thead><tr><th>العميل</th><th>نوع الحساب</th><th>صلاحية الإدارة</th><th>الحالة</th><th>آخر دخول</th><th></th></tr></thead><tbody id="usersTableBody">${renderUserRows(r.rows)}</tbody></table></div></article>`;
@@ -1855,18 +1885,37 @@ function reportOrderAmount(row) { return numericPick(row,['total','total_amount'
 function reportPayment(row) { return String(pick(row,['payment_method'],'غير محدد')||'غير محدد').toLowerCase(); }
 function reportStoreName(row) { const s=reportsPageState.stores.get(String(row.store_id||'')); return pick(row,['store_name','restaurant_name'],pick(s,['name'],'غير معروف')); }
 function reportDriverName(row) { if(!row.driver_id) return 'غير مسند'; const p=reportsPageState.profiles.get(String(row.driver_id)); return pick(p,['full_name','email'],shortId(row.driver_id)); }
+// Canonical labels are for display and grouping only; historical store-zone
+// attribution remains unresolved when the order has no origin-zone snapshot.
+function reportCanonicalZoneName(value) {
+  const raw=String(value??'').trim();
+  const name=raw.replace(/[\u064B-\u065F\u0670]/g,'').replace(/ـ/g,'').replace(/أ|إ|آ/g,'ا').replace(/ى/g,'ي').replace(/\s+/g,'');
+  if (['بخديدا','بغديدا','قرقوش'].includes(name)) return 'بخديدا';
+  if (['برطلة','برطلا'].includes(name)) return 'برطلة';
+  if (['كرمليس','كارملش','كرملش','كارمليش'].includes(name)) return 'كارملش';
+  return raw;
+}
 function reportSavedDeliveryAreaName(row) {
   const snap=String(row?.delivery_area_name||'').trim();
-  if (snap && snap!=='null') return snap;
+  if (snap && snap!=='null') return reportCanonicalZoneName(snap);
   const area=reportsPageState.areas?.get(String(row?.delivery_area_id||''));
   const name=String(area?.name||'').trim();
-  return name || 'غير محددة';
+  return reportCanonicalZoneName(name) || 'غير محددة';
 }
-function reportStoreOriginZoneName(storeId) {
+function reportStoreOriginZoneName(storeId, orderRow=null) {
+  // Use an order-time zone snapshot if the orders query supplies one.
+  // Never interpret the delivery area as the store's origin zone.
+  const savedName=String(orderRow?.store_zone_name ?? orderRow?.origin_zone_name ?? '').trim();
+  if(savedName) return reportCanonicalZoneName(savedName);
+  const savedId=String(orderRow?.store_zone_id ?? orderRow?.origin_zone_id ?? '').trim();
+  if(savedId) {
+    const savedZone=reportsPageState.zones?.get(savedId);
+    if(savedZone?.name) return reportCanonicalZoneName(savedZone.name);
+  }
   const store=reportsPageState.stores.get(String(storeId||''));
   const zone=reportsPageState.zones?.get(String(store?.zone_id||''));
   const name=String(zone?.name||'').trim();
-  return name || 'منطقة المتجر غير محددة';
+  return reportCanonicalZoneName(name) || 'منطقة المتجر غير محددة';
 }
 function reportArea(row) { return reportSavedDeliveryAreaName(row); }
 function zoneReportOrders(year) {
@@ -1879,7 +1928,7 @@ function zoneReportBuckets(year) {
   const rows=zoneReportOrders(year);
   const buckets={bakhdida:[], bartella:[], unknown:[]};
   for (const row of rows) {
-    const name=reportStoreOriginZoneName(row.store_id);
+    const name=reportStoreOriginZoneName(row.store_id,row);
     const key=name==='بخديدا'?'bakhdida':name==='برطلة'?'bartella':'unknown';
     buckets[key].push(row);
   }
@@ -1888,6 +1937,23 @@ function zoneReportBuckets(year) {
     buckets,
     karamlesh: rows.filter(row=>reportSavedDeliveryAreaName(row)==='كارملش')
   };
+}
+// Audit only: identify historical orders whose origin zone is inferred from the
+// store's current zone instead of an order-time snapshot. Never mutate orders.
+function zoneOriginAudit(rows) {
+  let inferred=0, missing=0;
+  for (const row of rows) {
+    const savedName=String(row?.store_zone_name ?? row?.origin_zone_name ?? '').trim();
+    const savedId=String(row?.store_zone_id ?? row?.origin_zone_id ?? '').trim();
+    const resolvedId=savedId && reportsPageState.zones?.get(savedId)?.name;
+    if (!savedName && !resolvedId) {
+      const store=reportsPageState.stores.get(String(row.store_id||''));
+      const zone=reportsPageState.zones?.get(String(store?.zone_id||''));
+      if (zone?.name) inferred++;
+      else missing++;
+    }
+  }
+  return {inferred,missing};
 }
 function zoneMoney(rows) {
   return {
@@ -2087,7 +2153,44 @@ function renderZoneReportSummary(year){
     return `<article class="panel"><div class="panel-head"><div><span>${escapeHtml(note)}</span><h3>${escapeHtml(title)}</h3></div></div><div class="simple-report-metrics"><div><span>الطلبات</span><b>${fmtNumber(money.count)}</b></div><div><span>القيمة</span><b>${fmtMoney(money.amount)}</b></div><div><span>أجور التوصيل</span><b>${fmtMoney(money.fee)}</b></div></div></article>`;
   };
   const filters=[['all','كل المناطق'],['bakhdida','بخديدا'],['bartella','برطلة'],['unknown','منطقة غير محددة']];
-  return `<section class="reports-grid">${card('بخديدا','متاجر منطقة بخديدا',data.buckets.bakhdida)}${card('برطلة','متاجر منطقة برطلة',data.buckets.bartella)}${card('كارملش','توصيل كارملش ضمن الطلب نفسه',data.karamlesh)}${card('غير محددة','طلب بلا منطقة توصيل محفوظة',data.rows.filter(row=>reportSavedDeliveryAreaName(row)==='غير محددة'))}</section><p class="muted-cell">طلب كارملش يُحسب مرة واحدة داخل منطقة متجره الأصلية، وتظهر كارملش هنا كإحصاء توصيل فقط.</p><div class="simple-report-back-row">${filters.map(([id,label])=>`<button type="button" class="${reportsPageState.zoneFilter===id?'primary-btn':'secondary-btn'} compact" data-zone-filter="${id}">${label}</button>`).join('')}</div>`;
+  // Additional administration-wide summary; store annual/monthly reports remain unchanged.
+  // Monetary figures are order values, not net profit or settlement balances.
+  const combined=zoneMoney(data.rows);
+  const originAudit=zoneOriginAudit(data.rows);
+  const auditNotice=originAudit.inferred||originAudit.missing ? `<p class="muted-cell" role="status">تنبيه تدقيق المناطق: ${fmtNumber(originAudit.inferred)} طلب تاريخي مصنّف وفق منطقة المتجر الحالية لعدم توفر لقطة منطقة وقت الطلب، و${fmtNumber(originAudit.missing)} طلب بلا منطقة أصل يمكن تحديدها. هذه الأرقام ضمن الإجمالي وليست طلبات إضافية؛ يُرجى عدم اعتماد الفصل التاريخي للمحاسبة قبل التحقق.</p>` : '';
+  const allCard=card('الإجمالي العام','جميع طلبات المناطق — بدون تكرار كارملش',data.rows);
+  const zoneAccountingRows=[
+    ['بخديدا',data.buckets.bakhdida],
+    ['برطلة',data.buckets.bartella],
+    ['منطقة المتجر غير محددة',data.buckets.unknown],
+  ];
+  // Read-only reconciliation: Karamlesh is a delivery destination, not an extra origin.
+  const karamleshByOrigin=[
+    ['بخديدا',data.karamlesh.filter(row=>reportStoreOriginZoneName(row.store_id,row)==='بخديدا')],
+    ['برطلة',data.karamlesh.filter(row=>reportStoreOriginZoneName(row.store_id,row)==='برطلة')],
+    ['غير محددة',data.karamlesh.filter(row=>!['بخديدا','برطلة'].includes(reportStoreOriginZoneName(row.store_id,row)))],
+  ];
+  const zoneCountSum=data.buckets.bakhdida.length+data.buckets.bartella.length+data.buckets.unknown.length;
+  const zoneCountAudit=zoneCountSum===data.rows.length
+    ? `<p class="muted-cell" role="status">✓ مطابقة أعداد المناطق: ${fmtNumber(zoneCountSum)} طلب، بدون تكرار كارملش.</p>`
+    : `<p class="muted-cell" role="alert">⚠ اختلاف في مطابقة أعداد المناطق: ${fmtNumber(zoneCountSum)} مقابل ${fmtNumber(data.rows.length)}. لا تعتمد هذا التقرير للمحاسبة.</p>`;
+  // Stage 10: read-only money reconciliation across mutually exclusive origin buckets.
+  const zoneMoneyParts=zoneAccountingRows.map(([,rows])=>zoneMoney(rows));
+  const summedAmount=zoneMoneyParts.reduce((sum,m)=>sum+m.amount,0);
+  const summedFee=zoneMoneyParts.reduce((sum,m)=>sum+m.fee,0);
+  const moneyMatches=Number.isFinite(combined.amount)&&Number.isFinite(combined.fee)
+    && Number.isFinite(summedAmount)&&Number.isFinite(summedFee)
+    && Math.abs(combined.amount-summedAmount)<0.01
+    && Math.abs(combined.fee-summedFee)<0.01;
+  const zoneMoneyAudit=moneyMatches
+    ? `<p class="muted-cell" role="status">✓ مطابقة المبالغ وأجور التوصيل بين إجمالي المناطق والتفصيل، بدون إضافة كارملش مرتين.</p>`
+    : `<p class="muted-cell" role="alert">⚠ اختلاف أو قيمة غير صالحة في مطابقة المبالغ أو أجور التوصيل. لا تعتمد الأرقام للمحاسبة قبل التحقق.</p>`;
+  const karamleshBreakdown=`<article class="panel" style="margin:14px 0"><div class="panel-head"><div><span>تفصيل إضافي للعرض فقط — لا يُضاف للإجمالي العام</span><h3>توصيل كارملش حسب منطقة المتجر</h3></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>منطقة المتجر</th><th>طلبات كارملش</th><th>أجور توصيل كارملش</th></tr></thead><tbody>${karamleshByOrigin.map(([name,rows])=>`<tr><td>${escapeHtml(name)}</td><td>${fmtNumber(rows.length)}</td><td>${fmtMoney(zoneMoney(rows).fee)}</td></tr>`).join('')}</tbody></table></div><p class="muted-cell">هذا تفصيل فرعي للطلبات نفسها، وليس إيراداً إضافياً أو صافي ربح.</p></article>`;
+  const accountingTable=`<article class="panel" style="margin:14px 0"><div class="panel-head"><div><span>ملخص إداري إضافي — لا يغيّر تقارير المتاجر</span><h3>حسابات المناطق للسنة ${Number(year)}</h3></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>منطقة المتجر</th><th>الطلبات</th><th>المكتملة</th><th>الملغاة</th><th>غير المكتملة</th><th>قيمة الطلبات</th><th>أجور التوصيل</th></tr></thead><tbody>${zoneAccountingRows.map(([label,rows])=>{
+    const stats=simpleReportStats(rows);const money=zoneMoney(rows);
+    return `<tr><td>${escapeHtml(label)}</td><td>${fmtNumber(stats.total)}</td><td>${fmtNumber(stats.delivered)}</td><td>${fmtNumber(stats.cancelled)}</td><td>${fmtNumber(stats.incomplete)}</td><td>${fmtMoney(money.amount)}</td><td>${fmtMoney(money.fee)}</td></tr>`;
+  }).join('')}<tr><th>الإجمالي العام</th><th>${fmtNumber(data.rows.length)}</th><th>${fmtNumber(simpleReportStats(data.rows).delivered)}</th><th>${fmtNumber(simpleReportStats(data.rows).cancelled)}</th><th>${fmtNumber(simpleReportStats(data.rows).incomplete)}</th><th>${fmtMoney(combined.amount)}</th><th>${fmtMoney(combined.fee)}</th></tr></tbody></table></div><p class="muted-cell">كارملش تظهر كمؤشر توصيل منفصل أعلاه، ولا تُضاف كمنطقة متاجر ثالثة. قيمة الطلبات ليست صافي أرباح أو مستحقات مالية. تصنيف الطلبات التاريخية بلا لقطة منطقة قد يتأثر بنقل المتجر.</p></article>`;
+  return `${allCard}${auditNotice}${zoneCountAudit}${zoneMoneyAudit}<section class="reports-grid">${card('بخديدا','متاجر منطقة بخديدا',data.buckets.bakhdida)}${card('برطلة','متاجر منطقة برطلة',data.buckets.bartella)}${card('كارملش','توصيل كارملش ضمن الطلب نفسه',data.karamlesh)}${card('غير محددة','طلب بلا منطقة توصيل محفوظة',data.rows.filter(row=>reportSavedDeliveryAreaName(row)==='غير محددة'))}</section>${accountingTable}${karamleshBreakdown}<p class="muted-cell">طلبات كارملش محسوبة ضمن منطقة المتجر، وتظهر هنا كمؤشر توصيل منفصل ولا تُضاف إلى إجمالي المناطق مرة ثانية. تصنيف الطلبات التاريخية حسب منطقة المتجر الحالية يحتاج لقطة منطقة وقت إنشاء الطلب.</p><div class="simple-report-back-row">${filters.map(([id,label])=>`<button type="button" class="${reportsPageState.zoneFilter===id?'primary-btn':'secondary-btn'} compact" data-zone-filter="${id}">${label}</button>`).join('')}</div>`;
 }
 function renderSimpleReportStoreList(year){
   const root=document.getElementById('simpleReportsRoot');if(!root)return;
