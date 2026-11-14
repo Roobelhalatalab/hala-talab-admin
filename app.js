@@ -583,7 +583,15 @@ async function safeAdminUsers() {
     ]);
     if(error) return {ok:false,rows:[],error:error.message};
     if(!identityR.ok) return {ok:false,rows:[],error:'تعذر التحقق من هوية العملاء: '+(identityR.error||'فشل قراءة الدالة')};
-    const merged=mergeAdminUserIdentityV57(data||[],identityR.ok?identityR.rows:[]);
+    // The identity RPC is an admin-authorized read-only source. Some deployments
+    // return no rows from the legacy list RPC; do not hide registered customers.
+    const identityOnly=(identityR.v57 && !(data||[]).length)
+      ? identityR.rows.filter(r=>r.is_registered_customer===true && r.is_anonymous!==true && normalizeAccountRoleV39(r.account_role)==='customer').map(r=>({
+          ...r, effective_type:'customer', access_status:'active',
+          profile_full_name:r.metadata_full_name||null, profile_phone:r.metadata_phone||r.phone||null,
+          _identity_only:true
+        })) : null;
+    const merged=identityOnly || mergeAdminUserIdentityV57(data||[],identityR.ok?identityR.rows:[]);
     // Stage 12: v57 is the admin-authorized source for registered-customer
     // classification. Do NOT query customer_accounts directly from the browser:
     // its RLS may correctly deny the request, which previously made the whole
@@ -942,7 +950,9 @@ function orderAdminOriginZone(row) {
   const savedName=String(row?.store_zone_name ?? row?.origin_zone_name ?? '').trim();
   if(savedName) return reportCanonicalZoneName(savedName);
   const savedId=String(row?.store_zone_id ?? row?.origin_zone_id ?? '').trim();
-  const zoneId=savedId || String(ordersPageState.lookups?.stores?.get(String(row?.store_id||''))?.zone_id||'');
+  // No order-time origin snapshot: current store zone is not historical evidence.
+  if(!savedId) return 'غير محددة';
+  const zoneId=savedId;
   const name=ordersPageState.zones?.get(zoneId)?.name;
   const normalized=reportCanonicalZoneName(name||'');
   return normalized==='بخديدا'||normalized==='برطلة' ? normalized : 'غير محددة';
@@ -1409,6 +1419,28 @@ function wireStoreOperationalActions(row){
     }
   }));
 }
+async function loadAdminStoreCoverageSummary(storeId) {
+  const target=document.getElementById('adminStoreCoverageSummary');
+  if(!target) return;
+  try {
+    const {data,error}=await supabase.from('hala_store_delivery_coverage')
+      .select('area_id,is_enabled,delivery_fee').eq('store_id',storeId);
+    if(error) throw error;
+    if(!data?.length){target.textContent='لا توجد إعدادات ظاهرة لهذا المتجر';return;}
+    const {data:areas, error:areasError}=await supabase.from('hala_zone_areas').select('id,name');
+    if(areasError) throw areasError;
+    const names=new Map((areas||[]).map(a=>[String(a.id),String(a.name||'')]));
+    target.innerHTML=data.map(c=>{
+      const label=names.get(String(c.area_id))||'منطقة غير معروفة';
+      const fee=Number(c.delivery_fee);
+      const feeLabel=Number.isFinite(fee)?fmtMoney(fee):'غير محددة';
+      return `<div>${escapeHtml(label)} — ${c.is_enabled?'مفعّل':'متوقف'} — ${escapeHtml(feeLabel)}</div>`;
+    }).join('');
+  } catch(e) {
+    target.textContent='تعذّر قراءة التغطية من صلاحيات الإدارة الحالية؛ لم يتم تعديل أي إعدادات.';
+  }
+}
+
 function openStoreDetails(row) {
   storesPageState.selected=row;
   const owner=ownerForStore(row)||{}; const review=reviewForStore(row);
@@ -1423,6 +1455,7 @@ function openStoreDetails(row) {
       ${detailItem('هاتف صاحب الحساب',ownerPhoneForStore(row))}
       ${detailItem('البريد',pick(owner,['email'],'غير متوفر'))}
       ${detailItem('الزون الأصلي',storeZoneLabel(row))}
+      ${detailItem('مناطق التوصيل وأجورها','<span id="adminStoreCoverageSummary">جاري التحميل…</span>',true)}
       ${detailItem('القسم',storeSectionLabel(row))}${detailItem('التصنيف',storeCategory(row))}
       ${detailItem('ترتيب الظهور',storeDisplayOrder(row)??'غير محدد')}
       ${detailItem('الحالة التشغيلية',`<span class=\"operational-pill ${storeOperationalClass(row)}\">${escapeHtml(storeOperationalStatus(row))}</span>`,true)}
@@ -1491,6 +1524,7 @@ function openStoreDetails(row) {
     <details class="raw-details"><summary>البيانات التقنية / بقية حقول المتجر</summary><div class="raw-grid">${Object.entries(row).map(([k,v])=>detailItem(k,typeof v==='object'?JSON.stringify(v):v)).join('')}</div></details>
   </section>`;
   document.body.appendChild(overlay);
+  void loadAdminStoreCoverageSummary(row.id);
   const close=()=>overlay.remove(); document.getElementById('closeStoreModal').addEventListener('click',close); overlay.addEventListener('click',e=>{if(e.target===overlay)close();});
   document.getElementById('saveStoreOriginZone')?.addEventListener('click',()=>saveStoreOriginZone(row));
   document.getElementById('saveStoreReview').addEventListener('click',()=>saveStoreReview(row));
@@ -1800,6 +1834,7 @@ function wireUserRowButtons(){document.querySelectorAll('.user-details-btn').for
 function accessOptionsHtml(current='active'){return USER_ACCESS_OPTIONS.map(([v,l])=>`<option value="${v}" ${v===String(current||'active')?'selected':''}>${l}</option>`).join('');}
 function openUserDetails(row) {
   usersPageState.selected=row;
+  if(row._identity_only){ alert('بيانات العميل معروضة للقراءة فقط. تعديل الحساب يحتاج إصلاح دالة admin_list_users أولاً.'); return; }
   const self=String(row.user_id)===String(usersPageState.currentUserId);
   const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.id='userModal';
   overlay.innerHTML=`<section class="modal-card user-modal-card">
@@ -1856,6 +1891,7 @@ async function renderUsersPage() {
   // Compare only registered v57 customer IDs with IDs returned by admin_list_users.
   // This is a read-only UI diagnostic; it does not change Auth, RPCs, or notifications.
   const hasMissingRegisteredCustomers=r.identity_v57===true && r.registered_count>r.rows.length;
+  const identityOnlyMode=r.rows.some(x=>x._identity_only===true);
   if(!r.rows.length && (r.registered_count>0 || r.identity_count>0)){
     content.innerHTML=`<section class="empty-state"><div class="empty-icon">⚠️</div><h2>العملاء موجودون لكن لم يظهروا</h2><p>نتائج دالة المستخدمين: ${fmtNumber(r.base_count)}، الهوية: ${fmtNumber(r.identity_count)}، حسابات العملاء: ${fmtNumber(r.registered_count)}.</p><p>يجب فحص توافق دالة admin_list_users مع حساب الإدارة الحالي. لم تُحذف أي حسابات.</p><button class="secondary-btn" id="retryUsers">↻ إعادة المحاولة</button></section>`;
     document.getElementById('retryUsers')?.addEventListener('click',renderUsersPage);return;
@@ -1864,6 +1900,7 @@ async function renderUsersPage() {
   const suspendedCount=r.rows.filter(x=>x.access_status==='suspended').length;
   const activeCount=r.rows.length-suspendedCount;
   content.innerHTML=`<section class="dashboard-hero"><div><span class="pill">إدارة يومية</span><h2>المستخدمون / العملاء</h2><p>هذه الصفحة مخصصة للعملاء فقط. المتاجر تظهر في قسم المتاجر والسائقون في قسم السائقين بدون تكرار.</p></div><button id="refreshUsers" class="secondary-btn">↻ تحديث العملاء</button></section>
+    ${identityOnlyMode?'<section class="alert warning">عرض العملاء من دالة الهوية (قراءة فقط). تعديل الحسابات معطل حتى إصلاح دالة المستخدمين.</section>':''}
     ${hasMissingRegisteredCustomers?`<section class="alert error" role="alert"><strong>تنبيه: قائمة العملاء غير مكتملة.</strong> دالة هوية العملاء تعرّفت على ${fmtNumber(r.registered_count)} حساب مسجل، لكن القائمة تعرض ${fmtNumber(r.rows.length)} فقط. لا تعتمد العدد الظاهر كإجمالي نهائي. يلزم فحص دالة admin_list_users وصلاحيات جلسة الإدارة. لم يتم تعديل أي حساب.</section>`:''}
     <section class="store-summary-grid">${actionMetricCard('إجمالي العملاء',fmtNumber(r.rows.length),'حسابات العملاء فقط','👥','users','all')}${actionMetricCard('نشطون',fmtNumber(activeCount),'حسابات العملاء المتاحة','✅','users-access','active')}${actionMetricCard('موقوفون',fmtNumber(suspendedCount),'إيقاف إداري مؤقت','⏸️','users-access','suspended')}</section>
     <section class="stores-toolbar"><label class="search-box">🔎<input id="usersSearch" type="search" placeholder="ابحث باسم العميل، البريد، الهاتف..." /></label><select id="usersAccessFilter"><option value="all">كل حالات المتابعة</option>${USER_ACCESS_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select><span id="usersResultCount" class="tag">${fmtNumber(r.rows.length)} عميل</span></section>
@@ -1912,10 +1949,8 @@ function reportStoreOriginZoneName(storeId, orderRow=null) {
     const savedZone=reportsPageState.zones?.get(savedId);
     if(savedZone?.name) return reportCanonicalZoneName(savedZone.name);
   }
-  const store=reportsPageState.stores.get(String(storeId||''));
-  const zone=reportsPageState.zones?.get(String(store?.zone_id||''));
-  const name=String(zone?.name||'').trim();
-  return reportCanonicalZoneName(name) || 'منطقة المتجر غير محددة';
+  // Never reassign old orders when the store moves to another origin zone.
+  return 'منطقة المتجر غير محددة';
 }
 function reportArea(row) { return reportSavedDeliveryAreaName(row); }
 function zoneReportOrders(year) {
