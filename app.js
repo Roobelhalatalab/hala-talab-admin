@@ -2285,7 +2285,7 @@ const systemPageState = {
 };
 const SYSTEM_TABS = [
   ['overview','نظرة عامة'], ['home-groups','مجموعات الصفحة الرئيسية'], ['client-categories','تصنيفات العميل'], ['categories','أقسام منتجات المتاجر'], ['offers','الكوبونات والعروض'],
-  ['finance','العمولات والاشتراكات'], ['pin-customers','استرجاع PIN العملاء'], ['phone-verification','تأكيد أرقام العملاء'], ['pin-partners','استرجاع PIN الشركاء'], ['support','الدعم'], ['settings','إعدادات النظام'], ['audit','سجل العمليات']
+  ['finance','العمولات والاشتراكات'], ['christmas','🎄 الكريسماس'], ['pin-customers','استرجاع PIN العملاء'], ['phone-verification','تأكيد أرقام العملاء'], ['pin-partners','استرجاع PIN الشركاء'], ['support','الدعم'], ['settings','إعدادات النظام'], ['audit','سجل العمليات']
 ];
 async function systemSafeRows(table, limit=5000) {
   try {
@@ -3364,6 +3364,48 @@ function wireCustomerPhoneVerifications(){
   }));
 }
 
+
+async function renderChristmasSettings() {
+ const host=document.getElementById('systemTabContent');
+ if(!host)return;
+ host.innerHTML='<p>جارٍ تحميل إعدادات الكريسماس…</p>';
+ const {data,error}=await supabase.rpc('hala_christmas_get_2026');
+ if(systemPageState.tab!=='christmas')return;
+ if(error || !data){host.innerHTML=`<p>تعذر قراءة إعدادات الكريسماس: ${escapeHtml(error?.message||'لم يتم تشغيل SQL بعد')}</p>`;return;}
+ const checked=(v)=>v?'checked':'';
+ // Always display and save in Baghdad time (+03:00), independent of admin device timezone.
+ const local=(iso)=>new Date(new Date(iso).getTime()+3*3600000).toISOString().slice(0,16);
+ const iraqIso=(value)=>new Date(value+':00+03:00').toISOString();
+ host.innerHTML=`<section style="max-width:600px;display:grid;gap:16px;padding:12px">
+ <h2>🎄 وضع الكريسماس المؤقت</h2><p>ينتهي تلقائياً عند منتصف ليلة 4 يناير بتوقيت العراق، ويرجع تصميم العميل الأصلي.</p>
+ <label><input id="xmasEnabled" type="checkbox" ${checked(data.admin_enabled)}> تشغيل وضع الكريسماس</label>
+ <label><input id="xmasSnow" type="checkbox" ${checked(data.snow_enabled)}> الثلج الخفيف</label>
+ <label><input id="xmasSplash" type="checkbox" ${checked(data.splash_enabled)}> شاشة سانتا الافتتاحية</label>
+ <label><input id="xmasDelivery" type="checkbox" ${checked(data.delivery_card_enabled)}> بطاقة سانتا أثناء التوصيل</label>
+ <label>البداية <input id="xmasStart" type="datetime-local" value="${escapeHtml(local(data.starts_at))}"></label>
+ <label>النهاية <input id="xmasEnd" type="datetime-local" value="${escapeHtml(local(data.ends_at))}"></label>
+ <small>الأوقات بتوقيت العراق (بغداد +03:00)، حتى إذا كان جهاز الإدارة بمنطقة زمنية أخرى.</small>
+ <p style="font-weight:bold">الحالة الحالية: ${data.enabled ? '🎄 الكريسماس فعّال' : 'التصميم الأصلي للملاحظة 2'} </p>
+ <button id="xmasSave" class="primary-btn">حفظ إعدادات الكريسماس</button><p id="xmasStatus" role="status"></p></section>`;
+ host.querySelector('#xmasSave')?.addEventListener('click',async()=>{
+  const btn=host.querySelector('#xmasSave');const status=host.querySelector('#xmasStatus');btn.disabled=true;
+  try{
+   const start=new Date(iraqIso(host.querySelector('#xmasStart').value)),end=new Date(iraqIso(host.querySelector('#xmasEnd').value));
+   if(!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||end<=start)throw new Error('تواريخ غير صحيحة');
+   const {error}=await supabase.rpc('hala_christmas_set_2026',{
+    p_enabled:host.querySelector('#xmasEnabled').checked,p_snow_enabled:host.querySelector('#xmasSnow').checked,
+    p_splash_enabled:host.querySelector('#xmasSplash').checked,p_delivery_card_enabled:host.querySelector('#xmasDelivery').checked,
+    p_starts_at:start.toISOString(),p_ends_at:end.toISOString()});
+   if(error)throw error;
+   const {data:updated, error:readError}=await supabase.rpc('hala_christmas_get_2026');
+   if(readError)throw readError;
+   status.textContent='تم الحفظ. الحالة الآن: '+(updated?.enabled?'الكريسماس فعّال 🎄':'التصميم الأصلي للملاحظة 2');
+   const current=host.querySelector('p[style="font-weight:bold"]');
+   if(current)current.textContent='الحالة الحالية: '+(updated?.enabled?'🎄 الكريسماس فعّال':'التصميم الأصلي للملاحظة 2');
+  }catch(e){status.textContent='تعذر الحفظ: '+e.message;}finally{btn.disabled=false;}
+ });
+}
+
 function renderSystemTab() {
   const host=document.getElementById('systemTabContent'); if (!host) return;
   const tab=systemPageState.tab;
@@ -3372,6 +3414,7 @@ function renderSystemTab() {
   else if (tab==='categories') { host.innerHTML=renderSystemCategories(); wireSystemCategories(); }
   else if (tab==='offers') { host.innerHTML=renderSystemOffers(); wireSystemOffers(); }
   else if (tab==='finance') { host.innerHTML=renderSystemFinance(); wireSystemFinance(); }
+  else if (tab==='christmas') { renderChristmasSettings(); }
   else if (tab==='pin-customers') { host.innerHTML=renderPinResetRequests('customer'); wirePinRecovery('customer'); }
   else if (tab==='phone-verification') { host.innerHTML=renderCustomerPhoneVerifications(); wireCustomerPhoneVerifications(); }
   else if (tab==='pin-partners') { host.innerHTML=renderPinResetRequests('partners'); wirePinRecovery('partners'); }
