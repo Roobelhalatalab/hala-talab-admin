@@ -3379,7 +3379,7 @@ async function renderChristmasSettings() {
  host.innerHTML=`<section style="max-width:600px;display:grid;gap:16px;padding:12px">
  <h2>🎄 وضع الكريسماس المؤقت</h2><p>ينتهي تلقائياً عند منتصف ليلة 4 يناير بتوقيت العراق، ويرجع تصميم العميل الأصلي.</p>
  <label><input id="xmasEnabled" type="checkbox" ${checked(data.admin_enabled)}> تشغيل وضع الكريسماس</label>
- <label><input id="xmasSnow" type="checkbox" ${checked(data.snow_enabled)}> الثلج الخفيف</label>
+ <label><input id="xmasSnow" type="checkbox" ${checked(data.snow_enabled)}> الثلج المتحرك وتراكمه فوق التصنيفات والموقع</label>
  <label><input id="xmasSplash" type="checkbox" ${checked(data.splash_enabled)}> شاشة سانتا الافتتاحية</label>
  <label><input id="xmasDelivery" type="checkbox" ${checked(data.delivery_card_enabled)}> بطاقة سانتا أثناء التوصيل</label>
  <label>البداية <input id="xmasStart" type="datetime-local" value="${escapeHtml(local(data.starts_at))}"></label>
