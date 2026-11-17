@@ -1088,3 +1088,13 @@ body{overflow-x:hidden;}
  .status-card{padding:13px}
 }
 @media(prefers-reduced-motion:reduce){.sidebar-nav .nav-item{transition:none}}
+
+/* Note 3: live, read-only offer design preview. Does not modify offer persistence. */
+.note3-preview-panel{margin:16px 0;padding:14px;border:1px solid rgba(255,120,30,.25);border-radius:18px}
+.note3-preview-panel>strong{display:block;margin-bottom:4px}
+.note3-preview-card{position:relative;overflow:hidden;min-height:175px;border-radius:18px;background:linear-gradient(110deg,#351c15 0%,#8c320d 50%,#f97813 100%);color:white;display:flex;align-items:center;justify-content:flex-start;padding:22px;isolation:isolate}
+.note3-preview-card:after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 85% 50%,rgba(255,205,100,.35),transparent 38%);z-index:-1}
+.note3-preview-content{display:flex;flex-direction:column;align-items:flex-start;gap:7px;max-width:90%}
+.note3-preview-content h3{color:white;margin:0;font-size:clamp(19px,3vw,27px);overflow-wrap:anywhere}
+.note3-preview-store{font-weight:700;opacity:.92}.note3-preview-content strong{font-size:clamp(22px,4vw,34px);color:#ffe58d}
+.note3-preview-cta{background:#ff7512;padding:8px 18px;border-radius:999px;font-weight:700}

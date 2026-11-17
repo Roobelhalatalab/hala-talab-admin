@@ -2284,7 +2284,7 @@ const systemPageState = {
   pinPartnerFilter:'all',
 };
 const SYSTEM_TABS = [
-  ['overview','نظرة عامة'], ['home-groups','مجموعات الصفحة الرئيسية'], ['client-categories','تصنيفات العميل'], ['categories','أقسام منتجات المتاجر'], ['offers','الكوبونات والعروض'],
+  ['overview','نظرة عامة'], ['home-groups','مجموعات الصفحة الرئيسية'], ['client-categories','تصنيفات العميل'], ['categories','أقسام منتجات المتاجر'], ['offers','الكوبونات والعروض'], ['external-ads','إعلانات الروابط الخارجية'],
   ['finance','العمولات والاشتراكات'], ['christmas','🎄 الكريسماس'], ['pin-customers','استرجاع PIN العملاء'], ['phone-verification','تأكيد أرقام العملاء'], ['pin-partners','استرجاع PIN الشركاء'], ['support','الدعم'], ['settings','إعدادات النظام'], ['audit','سجل العمليات']
 ];
 async function systemSafeRows(table, limit=5000) {
@@ -2835,6 +2835,7 @@ function platformOfferFormHtml(){
     <label>النهاية<input id="poEndAt" type="datetime-local" required value="${escapeHtml(local(r?.end_at)||local(month))}"></label>
     <label class="check-card"><input id="poActive" type="checkbox" ${r?.is_active===false?'':'checked'}><span><b>العرض فعال</b><small>يمكن إيقافه لاحقًا من القائمة.</small></span></label>
   </div><label class="full-field">وصف اختياري<textarea id="poDescription" rows="2" maxlength="500" placeholder="تفاصيل مختصرة للعرض">${escapeHtml(r?.description||'')}</textarea></label>
+  <section class="note3-preview-panel" aria-label="معاينة تصميم العرض"><strong>معاينة الإعلان قبل الحفظ</strong><p class="panel-note">هذه معاينة للطبقات والنصوص، وليست صورة مولّدة أو عرضًا منشورًا.</p><div class="note3-preview-card" id="note3OfferPreview"><div class="note3-preview-content"><span class="note3-preview-store" id="note3PreviewStore">اسم المتجر</span><h3 id="note3PreviewTitle">عنوان العرض</h3><strong id="note3PreviewDiscount">خصم 10%</strong><span class="note3-preview-cta">اطلب الآن</span></div></div></section>
   <div class="inline-actions"><button class="primary-btn compact" type="submit">${r?'✓ حفظ التعديل':'＋ إنشاء العرض'}</button>${r?'<button type="button" id="cancelPlatformOfferEdit" class="secondary-btn compact">إلغاء</button>':''}<span id="platformOfferMessage" class="panel-note"></span></div></form></article>`;
 }
 async function savePlatformOffer(){
@@ -2872,7 +2873,28 @@ function renderSystemOffers() {
   <article class="panel"><div class="panel-head"><div><span>المتاجر</span><h3>عروض المتاجر</h3><p class="panel-note">يظهر هنا فقط ما أنشأه أصحاب المتاجر. العرض يبقى متكررًا حتى انتهائه ما لم يحدد له حد استخدام لكل عميل.</p></div><span class="tag">${fmtNumber(promoRows.length)}</span></div>${systemPageState.promotionTable?`<div class="table-wrap"><table class="data-table"><thead><tr><th>العرض</th><th>المصدر</th><th>المتجر</th><th>الخصم</th><th>الاستخدام</th><th>الفترة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>${promoRows.length?promoRows.map(r=>`<tr><td><strong>${escapeHtml(promoTitle(r))}</strong></td><td><span class="tag">متجر</span></td><td>${escapeHtml(systemStoreName(r.store_id))}</td><td>${escapeHtml(String(offerDiscountValue(r)))}</td><td><small>${r.per_user_limit?`حد العميل: ${escapeHtml(String(r.per_user_limit))}`:'متكرر حتى الانتهاء'}</small></td><td><small>${escapeHtml(offerDateLabel(offerStartValue(r)))} → ${escapeHtml(offerDateLabel(offerEndValue(r)))}</small></td><td><span class="status-chip ${offerStatusClass(r)}">${offerStatusLabel(r)}</span></td><td>${renderOfferActions(r,'promotion')}</td></tr>`).join(''):`<tr><td colspan="8" class="muted-cell">لا توجد عروض متجر مطابقة.</td></tr>`}</tbody></table></div>`:`<div class="muted-cell system-pad">لا يوجد جدول عروض متاح حاليًا.</div>`}</article></div>`;
 }
 function findOfferRow(kind,id){const rows=kind==='coupon'?systemPageState.coupons:systemPageState.promotions;return rows.find(r=>String(r.id)===String(id));}
+function wireNote3OfferPreview(){
+  const root=document.getElementById('platformOfferForm');if(!root)return;
+  const update=()=>{
+    const read=id=>root.querySelector('#'+id)?.value||'';
+    const selected=root.querySelector('#poStore')?.selectedOptions?.[0];
+    const store=selected?.value?selected.textContent:'اسم المتجر';
+    const title=read('poTitle').trim()||'عنوان العرض';
+    const value=Number(read('poDiscountValue'))||0;
+    const suffix=read('poDiscountType')==='fixed'?' د.ع':'%';
+    const set=(id,value)=>{const el=root.querySelector('#'+id);if(el)el.textContent=value;};
+    set('note3PreviewStore',store);
+    set('note3PreviewTitle',title);
+    set('note3PreviewDiscount',value>0?'خصم '+value.toLocaleString('ar-IQ')+suffix:'قيمة الخصم');
+  };
+  ['poStore','poTitle','poDiscountType','poDiscountValue'].forEach(id=>{
+    const field=root.querySelector('#'+id);
+    field?.addEventListener('input',update);
+    field?.addEventListener('change',update);
+  });update();
+}
 function wireSystemOffers(){
+  wireNote3OfferPreview();
   document.getElementById('platformCouponForm')?.addEventListener('submit',e=>{e.preventDefault();savePlatformCoupon();});
   document.getElementById('cancelPlatformCouponEdit')?.addEventListener('click',()=>{systemPageState.editingPlatformCouponId=null;renderSystemTab();});
   document.getElementById('platformOfferForm')?.addEventListener('submit',e=>{e.preventDefault();savePlatformOffer();});
@@ -3406,6 +3428,94 @@ async function renderChristmasSettings() {
  });
 }
 
+// Note 3: Admin-only external advertisements. Writes are also gated by SQL RLS.
+function externalAdSafeUrl(value) {
+  try { const u=new URL(String(value||'').trim()); return ['https:','http:'].includes(u.protocol) && !!u.hostname && !u.username && !u.password ? u.href : null; }
+  catch (_) { return null; }
+}
+async function renderExternalAdsManagement() {
+ const host=document.getElementById('systemTabContent');if(!host)return;
+ host.innerHTML=`<h3>إعلانات الروابط الخارجية</h3><p>إعلانات مستقلة عن المتاجر. يتطلب الحفظ تشغيل SQL المراجَع بصلاحية الإدارة.</p>
+ <div id="externalAdsMessage" aria-live="polite"></div>
+ <form id="externalAdForm" class="form-stack" style="max-width:750px">
+ <label>نوع الإعلان<select name="destination_type"><option value="instagram">إنستغرام</option><option value="facebook">فيسبوك</option><option value="website">موقع</option><option value="event">حفلة / فعالية</option><option value="tickets">تذاكر</option><option value="registration">تسجيل</option></select></label>
+ <label>العنوان<input name="title" required maxlength="160"></label>
+ <label>الوصف<textarea name="description" maxlength="400"></textarea></label>
+ <label>رفع صورة من الجهاز<input name="image_file" type="file" accept="image/jpeg,image/png,image/webp"></label>
+ <label>أو رابط صورة HTTPS<input name="image_url" type="url" placeholder="https://..."></label>
+ <small>الحد الأعلى 5 ميغابايت. تُرفع الصورة عند الحفظ، ولا يُنشر الإعلان إلا إذا اخترت النشر.</small>
+ <label>رابط الوجهة HTTP/HTTPS<input name="destination_url" type="url" required placeholder="https://..."></label>
+ <label>اسم المناسبة (اختياري)<input name="event_name"></label>
+ <label>موعد المناسبة (اختياري)<input name="event_at" type="datetime-local"></label>
+ <label>مكان المناسبة (اختياري)<input name="event_location"></label>
+ <label>بداية العرض (اختياري)<input name="starts_at" type="datetime-local"></label>
+ <label>نهاية العرض (إلزامي)<input name="ends_at" type="datetime-local" required></label>
+ <label>ترتيب الظهور<input name="display_order" type="number" value="0"></label>
+ <label><input name="is_active" type="checkbox"> نشر الإعلان بعد الحفظ</label>
+ <div id="externalAdPreview" style="border-radius:18px;overflow:hidden;min-height:175px;padding:25px;background:linear-gradient(110deg,#e66a16,#34221d);color:white"></div>
+ <button class="primary-btn" type="submit" id="externalAdSaveButton">حفظ الإعلان</button> <button type="button" id="externalAdCancelEdit" hidden>إلغاء التعديل</button></form>
+ <h3>الإعلانات المحفوظة</h3><div id="externalAdList">جارٍ التحميل...</div>`;
+ const form=document.getElementById('externalAdForm'),msg=document.getElementById('externalAdsMessage');
+ let localPreviewUrl=null, editingAdId=null;
+ const resetEditor=()=>{editingAdId=null;form.reset();if(localPreviewUrl)URL.revokeObjectURL(localPreviewUrl);localPreviewUrl=null;document.getElementById("externalAdSaveButton").textContent="حفظ إعلان جديد";document.getElementById("externalAdCancelEdit").hidden=true;preview();};
+ document.getElementById("externalAdCancelEdit").addEventListener("click",resetEditor);
+ const preview=()=>{const d=new FormData(form),title=escapeHtml(d.get('title')||'عنوان الإعلان'),desc=escapeHtml(d.get('description')||'');const image=localPreviewUrl||externalAdSafeUrl(d.get('image_url'));
+ const box=document.getElementById('externalAdPreview');box.style.background=image&&(image.startsWith('https:')||image.startsWith('blob:'))?`linear-gradient(90deg,#20110dcc,#e66a1666),url("${image.replaceAll('"','%22')}") center/cover`:'linear-gradient(110deg,#e66a16,#34221d)';
+ box.innerHTML=`<strong style="font-size:23px">${title}</strong><p>${desc}</p><span style="background:#fff;color:#c64c05;border-radius:9px;padding:7px 14px">${escapeHtml(({instagram:'زيارة إنستغرام',facebook:'زيارة فيسبوك',website:'زيارة الموقع',event:'تفاصيل الفعالية',tickets:'حجز التذاكر',registration:'التسجيل'})[d.get('destination_type')]||'زيارة الرابط')}</span>`;};
+ form.querySelector('[name=image_file]').addEventListener('change',()=>{if(localPreviewUrl)URL.revokeObjectURL(localPreviewUrl);const file=form.querySelector('[name=image_file]').files[0];localPreviewUrl=file?URL.createObjectURL(file):null;preview();});
+ form.addEventListener('input',preview);preview();
+ async function reload(){const list=document.getElementById('externalAdList');if(!list)return;
+ const {data,error}=await supabase.from('hala_external_ads').select('id,title,description,image_url,destination_url,destination_type,event_name,event_at,event_location,starts_at,ends_at,display_order,is_active,created_at').order('created_at',{ascending:false}).limit(100);
+ if(error){list.textContent='تعذر قراءة الإعلانات: '+error.message;return;}
+ list.innerHTML=(data||[]).map(a=>`<div style="padding:12px;border-bottom:1px solid #ddd">${escapeHtml(a.title)} — ${escapeHtml(a.destination_type)} — ${a.is_active?'منشور':'غير منشور'} <button type="button" data-ad-toggle="${escapeHtml(a.id)}" data-next="${!a.is_active}">${a.is_active?'إيقاف':'تفعيل'}</button> <button type="button" data-ad-edit="${escapeHtml(a.id)}">تعديل</button> <button type="button" data-ad-delete="${escapeHtml(a.id)}">حذف</button></div>`).join('')||'لا توجد إعلانات بعد';
+ list.querySelectorAll('[data-ad-toggle]').forEach(b=>b.addEventListener('click',async()=>{
+   b.disabled=true;
+   const enable=b.dataset.next==='true';
+   const ad=(data||[]).find(item=>item.id===b.dataset.adToggle);
+   if(enable){
+     // Read the latest server record, not a potentially stale row in the UI.
+     const {data:latest,error:readError}=await supabase.from('hala_external_ads')
+       .select('id,starts_at,ends_at,is_active').eq('id',b.dataset.adToggle).single();
+     if(readError||!latest){msg.textContent='تعذر التحقق من صلاحية الإعلان: '+(readError?.message||'الإعلان غير موجود');await reload();return;}
+     const expiry=latest.ends_at?new Date(latest.ends_at).getTime():NaN;
+     const start=latest.starts_at?new Date(latest.starts_at).getTime():null;
+     if(!Number.isFinite(expiry)||expiry<=Date.now()||(start!==null&&(!Number.isFinite(start)||start>=expiry))){
+       msg.textContent='لا يمكن تفعيل إعلان منتهي أو بلا تاريخ انتهاء صالح. عدّل موعد الانتهاء أولاً.';
+       await reload();return;
+     }
+   }
+   const {error}=await supabase.from('hala_external_ads').update({is_active:enable}).eq('id',b.dataset.adToggle);
+   msg.textContent=error?'تعذر التحديث: '+error.message:(enable?'تم تفعيل الإعلان':'تم إيقاف الإعلان');
+   await reload();
+ }));
+ const dateInput=v=>{if(!v)return '';const dt=new Date(v);return Number.isNaN(dt.getTime())?'':new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString().slice(0,16);};
+ list.querySelectorAll('[data-ad-edit]').forEach(b=>b.addEventListener('click',()=>{const a=(data||[]).find(x=>x.id===b.dataset.adEdit);if(!a)return;resetEditor();editingAdId=a.id;for(const name of ['title','description','image_url','destination_url','destination_type','event_name','event_location','display_order']){const input=form.elements.namedItem(name);if(input)input.value=a[name]??'';}for(const name of ['event_at','starts_at','ends_at'])form.elements.namedItem(name).value=dateInput(a[name]);form.elements.namedItem('is_active').checked=!!a.is_active;document.getElementById('externalAdSaveButton').textContent='حفظ التعديلات';document.getElementById('externalAdCancelEdit').hidden=false;preview();form.scrollIntoView({behavior:'smooth',block:'start'});}));
+ list.querySelectorAll('[data-ad-delete]').forEach(b=>b.addEventListener('click',async()=>{const a=(data||[]).find(x=>x.id===b.dataset.adDelete);if(!a||!confirm('حذف الإعلان «'+a.title+'» نهائياً؟'))return;b.disabled=true;const {error}=await supabase.from('hala_external_ads').delete().eq('id',a.id);msg.textContent=error?'تعذر الحذف: '+error.message:'تم حذف الإعلان';if(!error&&editingAdId===a.id)resetEditor();await reload();}));}
+ form.addEventListener('submit',async(e)=>{e.preventDefault();const d=new FormData(form),destination=externalAdSafeUrl(d.get('destination_url'));
+ let image=externalAdSafeUrl(d.get('image_url'));const file=form.querySelector('[name=image_file]').files[0];
+ if(!destination||(!file&&!image?.startsWith('https:'))){msg.textContent='أضف صورة أو رابط HTTPS صحيحاً، وتأكد من رابط الوجهة.';return;}
+ if(file&&(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>5*1024*1024)){msg.textContent='الصورة يجب أن تكون JPG أو PNG أو WebP وبحجم أقل من 5 ميغابايت.';return;}
+ // Validate dates before uploading a file to avoid orphaned Storage objects.
+ const startValue=d.get('starts_at'),endValue=d.get('ends_at');
+ if(!endValue){msg.textContent='حدد تاريخ ووقت انتهاء الإعلان حتى يختفي تلقائياً ويُحذف بعد 7 أيام.';return;}
+ const startDate=startValue?new Date(startValue):null,endDate=new Date(endValue);
+ if(Number.isNaN(endDate.getTime())||(startDate&&Number.isNaN(startDate.getTime()))){msg.textContent='تاريخ الإعلان غير صالح.';return;}
+ if(endDate.getTime()<=Date.now()){msg.textContent='تاريخ انتهاء الإعلان يجب أن يكون في المستقبل.';return;}
+ if(startDate&&startDate>=endDate){msg.textContent='نهاية العرض يجب أن تكون بعد البداية';return;}
+ let newlyUploadedPath=null;
+ if(file){try{const ext=({'image/jpeg':'jpg','image/png':'png','image/webp':'webp'})[file.type];const path=`${crypto.randomUUID()}.${ext}`;const result=await supabase.storage.from('hala-external-ad-images').upload(path,file,{contentType:file.type,upsert:false});if(result.error)throw result.error;newlyUploadedPath=path;image=supabase.storage.from('hala-external-ad-images').getPublicUrl(path).data.publicUrl;}catch(err){msg.textContent='تعذر رفع الصورة: '+err.message;return;}}
+ const payload={title:String(d.get('title')).trim(),description:String(d.get('description')||''),image_url:image,destination_url:destination,destination_type:d.get('destination_type'),event_name:d.get('event_name')||null,event_location:d.get('event_location')||null,event_at:d.get('event_at')?new Date(d.get('event_at')).toISOString():null,starts_at:d.get('starts_at')?new Date(d.get('starts_at')).toISOString():null,ends_at:d.get('ends_at')?new Date(d.get('ends_at')).toISOString():null,display_order:Number(d.get('display_order')||0),is_active:d.get('is_active')==='on'};
+ if(payload.starts_at&&payload.ends_at&&payload.starts_at>=payload.ends_at){msg.textContent='نهاية العرض يجب أن تكون بعد البداية';return;}
+ const btn=form.querySelector('[type=submit]');btn.disabled=true;const {error}=editingAdId?await supabase.from('hala_external_ads').update(payload).eq('id',editingAdId):await supabase.from('hala_external_ads').insert(payload);btn.disabled=false;
+ if(error&&newlyUploadedPath){
+   // Compensating cleanup: a failed DB write must not leave an uploaded image behind.
+   const {error:cleanupError}=await supabase.storage.from('hala-external-ad-images').remove([newlyUploadedPath]);
+   msg.textContent='تعذر الحفظ: '+error.message+(cleanupError?'؛ تعذر تنظيف الصورة المرفوعة: '+cleanupError.message:'؛ أُزيلت الصورة الجديدة');
+ }else{msg.textContent=error?'تعذر الحفظ: '+error.message:'تم حفظ الإعلان بنجاح';}
+ if(!error){resetEditor();await reload();}});
+ await reload();
+}
+
 function renderSystemTab() {
   const host=document.getElementById('systemTabContent'); if (!host) return;
   const tab=systemPageState.tab;
@@ -3413,6 +3523,7 @@ function renderSystemTab() {
   else if (tab==='client-categories') { host.innerHTML=renderClientCategories(); wireClientCategories(); }
   else if (tab==='categories') { host.innerHTML=renderSystemCategories(); wireSystemCategories(); }
   else if (tab==='offers') { host.innerHTML=renderSystemOffers(); wireSystemOffers(); }
+  else if (tab==='external-ads') { renderExternalAdsManagement(); }
   else if (tab==='finance') { host.innerHTML=renderSystemFinance(); wireSystemFinance(); }
   else if (tab==='christmas') { renderChristmasSettings(); }
   else if (tab==='pin-customers') { host.innerHTML=renderPinResetRequests('customer'); wirePinRecovery('customer'); }
@@ -3848,7 +3959,7 @@ async function renderZoneBoundaryEditor(){
       <label>الزون <select id="newAreaZone">${zones.map(z=>`<option value="${escapeHtml(z.id)}">${escapeHtml(z.name)}</option>`).join('')}</select></label>
       <label>منطقة جديدة <input id="newAreaName" maxlength="80" placeholder="اسم المنطقة"></label><button type="button" id="createAreaBtn">إضافة منطقة</button></div>
       <div style="margin-top:12px">${zones.map(z=>`<div style="padding:8px;border-bottom:1px solid #ddd"><strong>${escapeHtml(z.name)}</strong> — ${z.is_active?'مفعّل':'متوقف'} <button type="button" data-zone-toggle="${escapeHtml(z.id)}" data-active="${z.is_active?'false':'true'}">${z.is_active?'إيقاف الزون':'تفعيل الزون'}</button>
-      ${managedAreas.filter(a=>a.zone_id===z.id).map(a=>`<div style="padding:6px 18px">${escapeHtml(a.name)} — ${a.is_active?'مفعّلة':'متوقفة'} ${a.has_boundary?'✓ حدود مرسومة':'⚠ بدون حدود'} <button type="button" data-area-toggle="${escapeHtml(a.id)}" data-active="${a.is_active?'false':'true'}">${a.is_active?'إيقاف':'تفعيل'}</button></div>`).join('')}</div>`).join('')}</div><p id="zoneManageMessage" role="status"></p>`;
+      ${managedAreas.filter(a=>a.zone_id===z.id).map(a=>`<div style="padding:6px 18px">${escapeHtml(a.name)} — ${a.is_active?'مفعّلة':'متوقفة'} ${a.has_boundary?'✓ حدود مرسومة':'⚠ بدون حدود'} <button type="button" data-area-toggle="${escapeHtml(a.id)}" data-active="${a.is_active?'false':'true'}">${a.is_active?'إيقاف':'تفعيل'}</button> <button type="button" data-ad-edit="${escapeHtml(a.id)}">تعديل</button> <button type="button" data-ad-delete="${escapeHtml(a.id)}">حذف</button></div>`).join('')}</div>`).join('')}</div><p id="zoneManageMessage" role="status"></p>`;
     const feedback=msg=>{const e=manage.querySelector('#zoneManageMessage');if(e)e.textContent=msg;};
     const call=async(fn,args,warning)=>{if(warning&&!confirm(warning))return;const {error}=await supabase.rpc(fn,args);if(error){feedback('تعذر الحفظ: '+error.message);return;}await drawManage();};
     manage.querySelector('#createZoneBtn').onclick=()=>{const name=manage.querySelector('#newZoneName').value.trim();if(name.length<2)return feedback('اكتب اسم الزون');call('hala_admin_create_zone_v1',{p_name:name});};
