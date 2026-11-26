@@ -5,22 +5,35 @@ const rows = document.getElementById('rows');
 const writeStatus = document.getElementById('writeStatus');
 const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function td(row, value) { const cell = document.createElement('td'); cell.textContent = value == null ? '—' : String(value); row.appendChild(cell); }
+const statusLabels={draft:'مسودة — تنتظر التفعيل',active:'نشطة',paused:'متوقفة مؤقتاً',closed:'مؤرشفة'};
+const iraqDate=value=>{const d=new Date(value);return value&&Number.isFinite(d.getTime())?new Intl.DateTimeFormat('ar-IQ',{timeZone:'Asia/Baghdad',dateStyle:'medium',timeStyle:'short'}).format(d):'—';};
+let contestList=[], reportSelection=null, reportRequest=0;
+const effectiveStatus=item=>item.status==='closed'?'closed':new Date(item.ends_at)<=new Date()?'expired':item.status==='active'&&new Date(item.starts_at)>new Date()?'scheduled':item.status;
+const errorLabel=e=>({'PRIZE_NO_ACTIVE_CODES':'لا توجد رموز متاحة للتفعيل','PRIZE_OUTSIDE_CONTEST_WINDOW':'انتهت مدة المسابقة؛ مددها أولاً','PRIZE_INVALID_STATUS_TRANSITION':'حالة المسابقة لا تسمح بهذا الإجراء','PRIZE_CONTEST_CLOSED':'المسابقة مؤرشفة ولا يمكن إعادة تفعيل رموزها'}[e?.message]||e?.message||'خطأ غير معروف');
 async function refresh() {
   status.textContent = 'جاري جلب المسابقات…'; rows.replaceChildren();
   // Server-side admin authorization is mandatory; no direct table access.
   const { data, error } = await supabase.rpc('ht_prize_admin_list_contests_v2');
   if (error) { status.textContent = 'خدمة المسابقات غير جاهزة أو لا توجد صلاحية: ' + error.message; return; }
   if (!Array.isArray(data)) { status.textContent = 'استجابة غير متوقعة من الخادم'; return; }
+  contestList=data;
+  renderContests();
+}
+function renderContests(){
+  rows.replaceChildren();
+  const q=el('contestSearch').value.trim().toLocaleLowerCase('ar');
+  const filter=el('contestStatusFilter').value;
+  const data=contestList.filter(x=>(filter==='all'||effectiveStatus(x)===filter)&&`${x.store_name} ${x.title}`.toLocaleLowerCase('ar').includes(q));
   for (const item of data) {
     const row = document.createElement('tr');
     const imageCell = document.createElement('td');
     if (item.image_path && uuidRe.test(String(item.store_id)) && String(item.image_path).startsWith(item.store_id + '/contests/')) { const img = document.createElement('img'); img.src = supabase.storage.from('product-images').getPublicUrl(item.image_path).data.publicUrl; img.alt = 'صورة المسابقة'; imageCell.appendChild(img); } else imageCell.textContent = '—';
     row.appendChild(imageCell);
-    for (const key of ['title','store_name','status','starts_at','ends_at']) td(row,item?.[key]);
+    for (const key of ['title','store_name','status','starts_at','ends_at']) td(row,key==='status'?(effectiveStatus(item)==='expired'?'منتهية':effectiveStatus(item)==='scheduled'?'مجدولة':statusLabels[item.status]||item.status):['starts_at','ends_at'].includes(key)?iraqDate(item[key]):item[key]);
     const actions = document.createElement('td');
     const current = String(item?.status ?? '');
     const next = current === 'active' ? 'paused' : ['draft','paused'].includes(current) ? 'active' : null;
-    if (next && uuidRe.test(String(item?.id ?? ''))) {
+    if (next && !(next==='active'&&effectiveStatus(item)==='expired') && uuidRe.test(String(item?.id ?? ''))) {
       const button = document.createElement('button');
       button.textContent = next === 'paused' ? 'إيقاف مؤقت' : current === 'draft' ? 'تفعيل المسابقة' : 'إعادة تفعيل';
       button.addEventListener('click', () => changeStatus(item.id, next, button));
@@ -37,11 +50,12 @@ async function refresh() {
       codesButton.textContent = 'الرموز';
       codesButton.type = 'button';
       codesButton.style.marginInlineStart = '8px';
-      codesButton.addEventListener('click', () => loadCodes(item.id, item.title, 0));
+      codesButton.addEventListener('click', () => openCodes(item.id, item.title));
       actions.appendChild(codesButton);
       const review = document.createElement('button'); review.type='button'; review.textContent='تسليم الجوائز / الإلغاء'; review.addEventListener('click',()=>loadFulfillment(item.id)); actions.appendChild(review);
     }
-    if (uuidRe.test(String(item.id)) && uuidRe.test(String(item.store_id))) {
+    if (uuidRe.test(String(item.id)) && item.status!=='closed') { const archive=document.createElement('button'); archive.type='button'; archive.textContent='حذف / أرشفة'; archive.className='danger'; archive.addEventListener('click',()=>archiveContest(item,archive)); actions.appendChild(archive); }
+    if (uuidRe.test(String(item.id)) && uuidRe.test(String(item.store_id)) && item.status!=='closed') {
       for (const [mode,label] of [['image','تغيير الصورة'],['end','تمديد المسابقة']]) { const b=document.createElement('button'); b.type='button'; b.textContent=label; b.addEventListener('click',()=>openEdit(item,mode)); actions.appendChild(b); }
     }
     row.appendChild(actions);
@@ -53,6 +67,7 @@ async function refresh() {
 
 async function loadReport(contestId, contestTitle, button) {
   if (!uuidRe.test(String(contestId))) return;
+  const request=++reportRequest; reportSelection={id:contestId,title:contestTitle,button};
   const reportStatus = document.getElementById('reportStatus');
   const reportRows = document.getElementById('reportRows');
   reportRows.replaceChildren();
@@ -62,6 +77,7 @@ async function loadReport(contestId, contestTitle, button) {
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user || !(await verifyAdmin(user))) throw new Error('صلاحية الإدارة غير متوفرة');
     const { data, error } = await supabase.rpc('ht_prize_admin_contest_report', { p_contest_id: contestId });
+    if(request!==reportRequest)return;
     if (error) throw error;
     if (!Array.isArray(data) || data.length !== 1) throw new Error('استجابة التقرير غير متوقعة');
     const item = data[0];
@@ -70,14 +86,14 @@ async function loadReport(contestId, contestTitle, button) {
     reportRows.appendChild(tr);
     reportStatus.textContent = 'تقرير: ' + (contestTitle || 'المسابقة') + ' — الأرقام لا تشمل مبالغ الخصومات.';
   } catch (error) {
-    reportStatus.textContent = 'تعذر تحميل التقرير: ' + (error?.message || 'خطأ غير معروف');
+    if(request===reportRequest) reportStatus.textContent = 'تعذر تحميل التقرير: ' + (error?.message || 'خطأ غير معروف');
   } finally { button.disabled = false; }
 }
 
 async function changeStatus(contestId, targetStatus, button) {
   if (!uuidRe.test(String(contestId)) || !['paused','active'].includes(targetStatus)) return;
-  const label = targetStatus === 'paused' ? 'إيقاف' : 'إعادة تفعيل';
-  if (!window.confirm(`${label} المسابقة؟ قد يؤثر ذلك على إمكانية استخدام الجوائز.`)) return;
+  const label = targetStatus === 'paused' ? 'إيقاف' : 'تفعيل';
+  if (!window.confirm(`${label} المسابقة؟ الجوائز المحفوظة سابقاً تبقى وفق صلاحيتها بعد تطبيق تحديث SQL.`)) return;
   button.disabled = true;
   status.textContent = `جاري ${label} المسابقة…`;
   try {
@@ -89,11 +105,36 @@ async function changeStatus(contestId, targetStatus, button) {
     if (error) throw error;
     await refresh();
   } catch (error) {
-    status.textContent = `تعذر ${label} المسابقة: ` + (error?.message || 'خطأ غير معروف');
+    status.textContent = `تعذر ${label} المسابقة: ` + errorLabel(error);
   } finally { button.disabled = false; }
 }
 
 
+async function archiveContest(item,button){
+ if(!confirm('أرشفة المسابقة «'+item.title+'»؟ تتوقف الرموز الجديدة وتبقى الجوائز المحفوظة والطلبات والتقارير.'))return;
+ button.disabled=true;
+ try{await requireAdmin();const {error}=await supabase.rpc('ht_prize_admin_archive_contest_v1',{p_contest_id:item.id});if(error)throw error;
+ if(codesContestId===item.id){++codesRequest;codesContestId=null;el('codesRows').replaceChildren();el('groupRows').replaceChildren();el('codesStatus').textContent='تمت أرشفة المسابقة';el('codesPrev').disabled=true;el('codesNext').disabled=true;}
+ await refresh();}catch(e){status.textContent='تعذر الأرشفة: '+e.message;}finally{button.disabled=false;}
+}
+let groupRequest=0;
+async function openCodes(id,title){
+ const request=++groupRequest;
+ el('codeSearch').value='';el('groupFilter').replaceChildren(new Option('جميع مجموعات الجوائز',''));
+ el('groupRows').replaceChildren();el('groupStatus').textContent='جاري تحميل المجموعات…';
+ el('codesPanel').scrollIntoView({behavior:'smooth',block:'start'});
+ const codes=loadCodes(id,title,0);
+ await loadGroups(id,request); await codes;
+}
+async function loadGroups(id,request=++groupRequest){
+ const selected=el('groupFilter').value;
+ try{await requireAdmin();const {data,error}=await supabase.rpc('ht_prize_admin_group_summary_v1',{p_contest_id:id});if(request!==groupRequest||codesContestId!==id)return;if(error)throw error;
+ el('groupRows').replaceChildren();el('groupFilter').replaceChildren(new Option('جميع مجموعات الجوائز',''));
+ for(const g of data||[]){el('groupFilter').add(new Option(g.prize_title,g.group_id));const tr=document.createElement('tr');for(const k of ['prize_title','codes_count','claims_count','consumed_count','remaining_claims'])td(tr,g[k]);el('groupRows').appendChild(tr);}
+ if([...el('groupFilter').options].some(o=>o.value===selected))el('groupFilter').value=selected;
+ el('groupStatus').textContent=data?.length?'مجموعات الجوائز لهذه المسابقة فقط':'لا توجد مجموعات';
+ }catch(e){if(request===groupRequest)el('groupStatus').textContent='تعذر تحميل المجموعات: '+e.message;}
+}
 let codesContestId = null;
 let codesContestTitle = '';
 let codesOffset = 0;
@@ -112,32 +153,31 @@ async function loadCodes(contestId, contestTitle, offset) {
   try {
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user || !(await verifyAdmin(user))) throw new Error('صلاحية الإدارة غير متوفرة');
-    const { data, error } = await supabase.rpc('ht_prize_admin_list_codes', {
-      p_contest_id: contestId, p_limit: codesPageSize, p_offset: offset
+    const { data, error } = await supabase.rpc('ht_prize_manage_list_codes_v1', {
+      p_contest_id: contestId, p_group_id:el('groupFilter').value||null,p_search:el('codeSearch').value.trim()||null,p_limit: codesPageSize, p_offset: offset
     });
     if (request !== codesRequest) return;
     if (error) throw error;
     if (!Array.isArray(data)) throw new Error('استجابة غير متوقعة');
     for (const item of data) {
       const tr = document.createElement('tr');
-      // Do not expose full redeemable codes in the admin browser.
-      for (const key of ['code_masked','max_redemptions','claims_count','consumed_count','is_disabled','created_at']) {
-        td(tr, key === 'is_disabled' ? (item[key] ? 'معطّل' : 'فعّال') : item[key]);
-      }
-      // Admin action uses an opaque UUID, never the secret redeemable code.
+      td(tr,item.code);td(tr,item.prize_title);td(tr,item.max_redemptions);td(tr,item.claims_count);td(tr,item.consumed_count);td(tr,item.remaining_claims);
+      td(tr,item.is_disabled?'معطّل':Number(item.remaining_claims)===0?'نفد':item.activates_at&&new Date(item.activates_at)>new Date()?'مجدول':'متاح');td(tr,iraqDate(item.created_at));
       const actionCell = document.createElement('td');
       if (uuidRe.test(String(item.code_id || ''))) {
         const toggle = document.createElement('button');
         toggle.type = 'button';
+        toggle.disabled=contestList.find(c=>c.id===contestId)?.status==='closed';
         toggle.textContent = item.is_disabled ? 'إعادة تفعيل' : 'تعطيل';
         toggle.addEventListener('click', () => setCodeStatus(contestId, item.code_id, !item.is_disabled, toggle));
         actionCell.appendChild(toggle);
+        const copy=document.createElement('button');copy.type='button';copy.textContent='نسخ';copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(item.code);copy.textContent='تم النسخ';}catch(e){codeStatus.textContent='تعذر النسخ؛ حدد الرمز وانسخه يدوياً';}});actionCell.appendChild(copy);
       } else actionCell.textContent = '—';
       tr.appendChild(actionCell);
       codeRows.appendChild(tr);
     }
     prev.disabled = offset === 0; next.disabled = data.length < codesPageSize;
-    codeStatus.textContent = `${codesContestTitle} — عرض ${data.length} رمز، ابتداءً من ${offset + 1}. الرموز مخفية جزئياً للحماية.`;
+    codeStatus.textContent = `${codesContestTitle} — عرض ${data.length} رمز، ابتداءً من ${offset + 1}. الرموز كاملة — للإدارة فقط.`;
   } catch (error) {
     if (request === codesRequest) codeStatus.textContent = 'تعذر تحميل الرموز: ' + (error?.message || 'خطأ غير معروف');
   }
@@ -155,9 +195,10 @@ async function setCodeStatus(contestId, codeId, disabled, button) {
       p_contest_id: contestId, p_code_id: codeId, p_disabled: disabled
     });
     if (error) throw error;
-    await loadCodes(contestId, codesContestTitle, codesOffset);
+    if(codesContestId===contestId){await Promise.all([loadCodes(contestId,codesContestTitle,codesOffset),loadGroups(contestId)]);}
+    if(reportSelection?.id===contestId){const r=reportSelection;await loadReport(r.id,r.title,r.button);}
   } catch (error) {
-    document.getElementById('codesStatus').textContent = 'تعذر تغيير حالة الرمز: ' + (error?.message || 'خطأ غير معروف');
+    if(codesContestId===contestId) document.getElementById('codesStatus').textContent = 'تعذر تغيير حالة الرمز: ' + errorLabel(error);
   } finally { button.disabled = false; }
 }
 
@@ -170,6 +211,9 @@ async function init() {
   document.getElementById('createPanel').hidden = false;
   document.getElementById('createContest').addEventListener('submit', createContest);
   document.getElementById('refresh').addEventListener('click', refresh);
+  el('contestSearch').addEventListener('input',renderContests);el('contestStatusFilter').addEventListener('change',renderContests);
+  el('groupFilter').addEventListener('change',()=>{if(codesContestId)loadCodes(codesContestId,codesContestTitle,0);});
+  el('codeSearchForm').addEventListener('submit',e=>{e.preventDefault();if(codesContestId)loadCodes(codesContestId,codesContestTitle,0);});
   document.getElementById('codesPanel').hidden = false;
   document.getElementById('codesPrev').addEventListener('click', () => { if (codesContestId) loadCodes(codesContestId, codesContestTitle, Math.max(0, codesOffset - codesPageSize)); });
   document.getElementById('codesNext').addEventListener('click', () => { if (codesContestId) loadCodes(codesContestId, codesContestTitle, codesOffset + codesPageSize); });
