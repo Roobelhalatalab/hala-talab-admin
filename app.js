@@ -2285,7 +2285,7 @@ const systemPageState = {
 };
 const SYSTEM_TABS = [
   ['overview','نظرة عامة'], ['home-groups','مجموعات الصفحة الرئيسية'], ['client-categories','تصنيفات العميل'], ['categories','أقسام منتجات المتاجر'], ['offers','الكوبونات والعروض'], ['external-ads','إعلانات الروابط الخارجية'],
-  ['finance','العمولات والاشتراكات'], ['christmas','🎄 الكريسماس'], ['pin-customers','استرجاع PIN العملاء'], ['phone-verification','تأكيد أرقام العملاء'], ['pin-partners','استرجاع PIN الشركاء'], ['support','الدعم'], ['settings','إعدادات النظام'], ['audit','سجل العمليات']
+  ['finance','العمولات والاشتراكات'], ['christmas','🎄 الكريسماس'], ['customer-update','تحديث تطبيق العميل'], ['pin-customers','استرجاع PIN العملاء'], ['phone-verification','تأكيد أرقام العملاء'], ['pin-partners','استرجاع PIN الشركاء'], ['support','الدعم'], ['settings','إعدادات النظام'], ['audit','سجل العمليات']
 ];
 async function systemSafeRows(table, limit=5000) {
   try {
@@ -3387,6 +3387,16 @@ function wireCustomerPhoneVerifications(){
 }
 
 
+async function renderCustomerUpdateMessages(){
+ const host=document.getElementById('systemTabContent'); if(!host)return;
+ host.innerHTML=`<section style="max-width:650px"><h2>إدارة تحديث تطبيق العميل</h2><p>النص يظهر فقط عند تحقق التطبيق من توفر الإصدار في المتجر. التحديث اختياري دائماً.</p><form id="updateMessageForm" class="form-stack"><label>النظام<select name="platform"><option value="android">Android</option><option value="ios">iOS</option></select></label><label>رقم الإصدار المستهدف (Android رقم البناء مثل 51، iOS الإصدار مثل 1.0.14)<input name="release_key" required maxlength="40"></label><label>العنوان<input name="title" required maxlength="120" value="تحديث جديد لتطبيق هلا طلب"></label><label>الوصف<textarea name="body" required maxlength="1000" rows="5">حدّث التطبيق واستمتع بأحدث المميزات وتجربة أفضل. 🧡</textarea></label><button type="submit" class="primary-btn">حفظ نص التحديث</button><button type="button" id="loadUpdateMessage">جلب النص المحفوظ</button><p id="updateMessageStatus" role="status"></p></form></section>`;
+ const form=host.querySelector('#updateMessageForm'), status=host.querySelector('#updateMessageStatus');
+ const values=()=>Object.fromEntries(new FormData(form));
+ function valid(v){return v.platform==='android'?/^[1-9][0-9]{0,9}$/.test(v.release_key):/^[0-9]+(?:\.[0-9]+){1,3}$/.test(v.release_key);}
+ form.addEventListener('submit',async e=>{e.preventDefault();const v=values();if(!valid(v)){status.textContent='رقم الإصدار غير صحيح';return;}const b=form.querySelector('button[type=submit]');b.disabled=true;try{const {error}=await supabase.from('ht_customer_update_messages_v1').upsert({platform:v.platform,release_key:v.release_key,title:v.title.trim(),body:v.body.trim()},{onConflict:'platform,release_key'});if(error)throw error;status.textContent='تم الحفظ';}catch(e){status.textContent='تعذر الحفظ: '+e.message;}finally{b.disabled=false;}});
+ host.querySelector('#loadUpdateMessage').addEventListener('click',async()=>{const v=values();if(!valid(v)){status.textContent='أدخل رقم الإصدار أولاً';return;}try{const {data,error}=await supabase.from('ht_customer_update_messages_v1').select('title,body').eq('platform',v.platform).eq('release_key',v.release_key).maybeSingle();if(error)throw error;if(!data){status.textContent='لا يوجد نص محفوظ لهذا الإصدار';return;}form.elements.title.value=data.title;form.elements.body.value=data.body;status.textContent='تم جلب النص';}catch(e){status.textContent='تعذر القراءة: '+e.message;}});
+}
+
 async function renderChristmasSettings() {
  const host=document.getElementById('systemTabContent');
  if(!host)return;
@@ -3526,6 +3536,7 @@ function renderSystemTab() {
   else if (tab==='external-ads') { renderExternalAdsManagement(); }
   else if (tab==='finance') { host.innerHTML=renderSystemFinance(); wireSystemFinance(); }
   else if (tab==='christmas') { renderChristmasSettings(); }
+  else if (tab==='customer-update') { renderCustomerUpdateMessages(); }
   else if (tab==='pin-customers') { host.innerHTML=renderPinResetRequests('customer'); wirePinRecovery('customer'); }
   else if (tab==='phone-verification') { host.innerHTML=renderCustomerPhoneVerifications(); wireCustomerPhoneVerifications(); }
   else if (tab==='pin-partners') { host.innerHTML=renderPinResetRequests('partners'); wirePinRecovery('partners'); }
