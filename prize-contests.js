@@ -54,7 +54,7 @@ function renderContests(){
       actions.appendChild(codesButton);
       const review = document.createElement('button'); review.type='button'; review.textContent='تسليم الجوائز / الإلغاء'; review.addEventListener('click',()=>loadFulfillment(item.id)); actions.appendChild(review);
     }
-    if (uuidRe.test(String(item.id)) && item.status!=='closed') { const archive=document.createElement('button'); archive.type='button'; archive.textContent='حذف / أرشفة'; archive.className='danger'; archive.addEventListener('click',()=>archiveContest(item,archive)); actions.appendChild(archive); }
+    if (uuidRe.test(String(item.id)) ) { const archive=document.createElement('button'); archive.type='button'; archive.textContent='حذف نهائي'; archive.className='danger'; archive.addEventListener('click',()=>archiveContest(item,archive)); actions.appendChild(archive); }
     if (uuidRe.test(String(item.id)) && uuidRe.test(String(item.store_id)) && item.status!=='closed') {
       for (const [mode,label] of [['image','تغيير الصورة'],['end','تمديد المسابقة']]) { const b=document.createElement('button'); b.type='button'; b.textContent=label; b.addEventListener('click',()=>openEdit(item,mode)); actions.appendChild(b); }
     }
@@ -76,15 +76,19 @@ async function loadReport(contestId, contestTitle, button) {
   try {
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user || !(await verifyAdmin(user))) throw new Error('صلاحية الإدارة غير متوفرة');
-    const { data, error } = await supabase.rpc('ht_prize_admin_contest_report', { p_contest_id: contestId });
-    if(request!==reportRequest)return;
-    if (error) throw error;
-    if (!Array.isArray(data) || data.length !== 1) throw new Error('استجابة التقرير غير متوقعة');
-    const item = data[0];
-    const tr = document.createElement('tr');
-    for (const key of ['codes_count','claims_count','consumed_count','released_count']) td(tr, item[key]);
-    reportRows.appendChild(tr);
-    reportStatus.textContent = 'تقرير: ' + (contestTitle || 'المسابقة') + ' — الأرقام لا تشمل مبالغ الخصومات.';
+    const {data,error}=await supabase.rpc('ht_prize_stats_v2',{p_contest_id:contestId});
+    if(request!==reportRequest)return;if(error)throw error;if(!Array.isArray(data))throw new Error('استجابة غير متوقعة');
+    const keys=['total_capacity','remaining','saved','used','unavailable'];
+    const total=Object.fromEntries(keys.map(k=>[k,data.reduce((n,g)=>n+Number(g[k]||0),0)]));
+    for(const g of [{prize_title:'الإجمالي',group_id:null,...total},...data]){
+      const tr=document.createElement('tr');td(tr,g.prize_title);
+      for(const [k,f] of [['total_capacity','all'],['remaining','available'],['saved','saved'],['used','used'],['unavailable','unavailable']]){
+        const cell=document.createElement('td'),b=document.createElement('button');b.type='button';b.textContent=String(g[k]??0);b.addEventListener('click',()=>f==='saved'||f==='used'?loadWinners(contestId,contestTitle,g.group_id,f,0):openCodes(contestId,contestTitle,g.group_id,f));cell.appendChild(b);tr.appendChild(cell);
+      }reportRows.appendChild(tr);
+    }
+    reportStatus.textContent='تقرير: '+contestTitle+' — اضغط العدد لعرض التفاصيل.';
+    const winners=document.createElement('button');winners.type='button';winners.textContent='جميع الفائزين';winners.addEventListener('click',()=>loadWinners(contestId,contestTitle,null,'all',0));const tr=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=6;cell.appendChild(winners);tr.appendChild(cell);reportRows.appendChild(tr);
+    el('reportPanel').scrollIntoView({behavior:'smooth'});
   } catch (error) {
     if(request===reportRequest) reportStatus.textContent = 'تعذر تحميل التقرير: ' + (error?.message || 'خطأ غير معروف');
   } finally { button.disabled = false; }
@@ -111,20 +115,19 @@ async function changeStatus(contestId, targetStatus, button) {
 
 
 async function archiveContest(item,button){
- if(!confirm('أرشفة المسابقة «'+item.title+'»؟ تتوقف الرموز الجديدة وتبقى الجوائز المحفوظة والطلبات والتقارير.'))return;
+ if(!confirm('حذف المسابقة «'+item.title+'» نهائياً؟ لا يمكن حذف مسابقة لها فائزون.'))return;
  button.disabled=true;
- try{await requireAdmin();const {error}=await supabase.rpc('ht_prize_admin_archive_contest_v1',{p_contest_id:item.id});if(error)throw error;
- if(codesContestId===item.id){++codesRequest;codesContestId=null;el('codesRows').replaceChildren();el('groupRows').replaceChildren();el('codesStatus').textContent='تمت أرشفة المسابقة';el('codesPrev').disabled=true;el('codesNext').disabled=true;}
- await refresh();}catch(e){status.textContent='تعذر الأرشفة: '+e.message;}finally{button.disabled=false;}
+ try{await requireAdmin();const {error}=await supabase.rpc('ht_prize_delete_unused_contest_v2',{p_contest_id:item.id});if(error)throw error;
+ if(reportSelection?.id===item.id){++reportRequest;reportSelection=null;el('reportRows').replaceChildren();el('reportStatus').textContent='تم حذف المسابقة';} if(winnerSelection?.id===item.id){++winnerRequest;winnerSelection=null;el('winnerPanel').hidden=true;el('winnerRows').replaceChildren();} if(codesContestId===item.id){++codesRequest;++groupRequest;codesContestId=null;el('codesRows').replaceChildren();el('groupRows').replaceChildren();el('codesStatus').textContent='تم حذف المسابقة';el('codesPrev').disabled=true;el('codesNext').disabled=true;}
+ await refresh();}catch(e){status.textContent='تعذر الحذف: '+(e.message==='PRIZE_DELETE_HAS_CLAIMS'?'توجد جوائز مرتبطة بفائزين؛ لا يمكن حذفها':e.message);}finally{button.disabled=false;}
 }
 let groupRequest=0;
-async function openCodes(id,title){
+async function openCodes(id,title,group=null,filter='all'){
  const request=++groupRequest;
- el('codeSearch').value='';el('groupFilter').replaceChildren(new Option('جميع مجموعات الجوائز',''));
+ el('codeSearch').value='';el('codeFilter').value=filter;el('groupFilter').replaceChildren(new Option('جميع مجموعات الجوائز',''));
  el('groupRows').replaceChildren();el('groupStatus').textContent='جاري تحميل المجموعات…';
  el('codesPanel').scrollIntoView({behavior:'smooth',block:'start'});
- const codes=loadCodes(id,title,0);
- await loadGroups(id,request); await codes;
+ codesContestId=id; ++codesRequest; await loadGroups(id,request); if(request!==groupRequest||codesContestId!==id)return; if(group)el('groupFilter').value=group; await loadCodes(id,title,0);
 }
 async function loadGroups(id,request=++groupRequest){
  const selected=el('groupFilter').value;
@@ -153,8 +156,8 @@ async function loadCodes(contestId, contestTitle, offset) {
   try {
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user || !(await verifyAdmin(user))) throw new Error('صلاحية الإدارة غير متوفرة');
-    const { data, error } = await supabase.rpc('ht_prize_manage_list_codes_v1', {
-      p_contest_id: contestId, p_group_id:el('groupFilter').value||null,p_search:el('codeSearch').value.trim()||null,p_limit: codesPageSize, p_offset: offset
+    const { data, error } = await supabase.rpc('ht_prize_manage_list_codes_v2', {
+      p_contest_id: contestId, p_group_id:el('groupFilter').value||null,p_search:el('codeSearch').value.trim()||null,p_limit: codesPageSize, p_offset: offset,p_filter:el('codeFilter').value
     });
     if (request !== codesRequest) return;
     if (error) throw error;
@@ -212,6 +215,7 @@ async function init() {
   document.getElementById('createContest').addEventListener('submit', createContest);
   document.getElementById('refresh').addEventListener('click', refresh);
   el('contestSearch').addEventListener('input',renderContests);el('contestStatusFilter').addEventListener('change',renderContests);
+  el('codeFilter').addEventListener('change',()=>{if(codesContestId)loadCodes(codesContestId,codesContestTitle,0);});
   el('groupFilter').addEventListener('change',()=>{if(codesContestId)loadCodes(codesContestId,codesContestTitle,0);});
   el('codeSearchForm').addEventListener('submit',e=>{e.preventDefault();if(codesContestId)loadCodes(codesContestId,codesContestTitle,0);});
   document.getElementById('codesPanel').hidden = false;
@@ -297,3 +301,10 @@ async function loadFulfillment(contestId) {
     }
   }catch(e){if(request===fulfillmentRequest)status.textContent='تعذر تحميل الطلبات: '+e.message;}
 }
+
+let winnerRequest=0,winnerSelection=null;
+async function loadWinners(id,title,group,filter,offset){
+ const request=++winnerRequest;winnerSelection={id,title,group,filter,offset};const panel=el('winnerPanel'),rows=el('winnerRows');panel.hidden=false;rows.replaceChildren();el('winnerPrev').disabled=true;el('winnerNext').disabled=true;el('winnerStatus').textContent='جاري تحميل الفائزين…';panel.scrollIntoView({behavior:'smooth'});
+ try{await requireAdmin();const {data,error}=await supabase.rpc('ht_prize_winners_v1',{p_contest_id:id,p_group_id:group,p_state:filter,p_limit:50,p_offset:offset});if(request!==winnerRequest)return;if(error)throw error;if(!Array.isArray(data))throw new Error('استجابة غير متوقعة');for(const w of data){const tr=document.createElement('tr');for(const v of [w.winner_name,w.prize_title,w.prize_code,iraqDate(w.claimed_at),({saved:'محفوظة',used:'مستخدمة',expired:'منتهية'})[w.claim_state]||w.claim_state,w.order_id])td(tr,v);rows.appendChild(tr);}el('winnerStatus').textContent=title+' — '+(data.length?'عدد النتائج في الصفحة: '+data.length:'لا توجد نتائج');el('winnerPrev').disabled=offset===0;el('winnerNext').disabled=data.length<50;}catch(e){if(request===winnerRequest)el('winnerStatus').textContent='تعذر تحميل الفائزين: '+e.message;}
+}
+for(const [id,delta] of [['winnerPrev',-50],['winnerNext',50]])el(id).addEventListener('click',()=>{const w=winnerSelection;if(w)loadWinners(w.id,w.title,w.group,w.filter,Math.max(0,w.offset+delta));});
